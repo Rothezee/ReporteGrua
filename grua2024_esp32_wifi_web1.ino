@@ -13,16 +13,16 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <Ticker.h>  
+#include <Ticker.h>  // Agregar la biblioteca Ticker
 
-Preferences preferences; //crea un objeto de tipo Preferences
+Preferences preferences;  //crea un objeto de tipo Preferences
 
 int lcdColumns = 16;
 int lcdRows = 2;
 LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
 
 const char* device_id = "ESP32_005";
-const char* ssid = "HUAWEI-2.4G-Dqc5";
+const char* ssid = "MOVISTAR-WIFI6-0160";
 const char* password = "46332714";
 const char* serverAddress = "https://maquinasbonus.com/esp32_project/insert_data.php";
 const char* serverAddress1 = "https://maquinasbonus.com/esp32_project/insert_heartbeat.php";
@@ -187,10 +187,11 @@ void sendDataToPHP(const char* device_id, unsigned int dato1, unsigned int dato2
 }
 
 void setup() {
-  Serial.begin(115200);
-  preferences.begin("storage", false); 
 
-  analogWriteFrequency(EPINZA, 100); //LOS PARAMETROS SON EL PIN Y LA FRECUENCIA
+  Serial.begin(115200);
+  preferences.begin("storage", false);
+
+  analogWriteFrequency(EPINZA, 100);  //LOS PARAMETROS SON EL PIN Y LA FRECUENCIA
 
   // Inicializar LCD
   lcd.init();
@@ -268,7 +269,7 @@ void setup() {
     B++;
     delay(50);
   }
-
+  graficar();
   digitalWrite(DATO11, 1);              // inicializa el dato 11 mantiene a 0 el reset del sim 800
   connectToWiFi();                      // Conectar a WiFi al inicio
   tickerPulso.attach(60, enviarPulso);  // Ejecuta cada 60 segundos
@@ -313,8 +314,6 @@ void leecoin() {
   }
   if (AUXCOIN == 5 && AUX2COIN == LOW) {
     CREDITO++;
-    PJFIJO++;  // Incrementar PJFIJO cuando ECOIN está HIGH y se detecta un evento válido
-    COIN++;
     AUX2COIN = HIGH;
     graficar();
   }
@@ -325,7 +324,6 @@ void leecoin() {
   }
   if (AUXCOIN == 0 && AUX2COIN == HIGH) AUX2COIN = LOW;
 }
-
 
 void leerbarrera() {
   if (BARRERAAUX2 == 1) {
@@ -467,13 +465,13 @@ void programar() {
     }
   }
   if (BORRARCONTADORES == HIGH) {
-preferences.putInt("coin", 0); 
-preferences.putInt("contsalida", 0); 
-preferences.putInt("bank", 0);      
+    preferences.putInt("coin", 0);
+    preferences.putInt("contsalida", 0);
+    preferences.putInt("bank", 0);
 
-COIN = preferences.getInt("coin", 0);
-CONTSALIDA = preferences.getInt("contsalida", 0);
-BANK = preferences.getInt("bank", 0);
+    COIN = preferences.getInt("coin", 0);
+    CONTSALIDA = preferences.getInt("contsalida", 0);
+    BANK = preferences.getInt("bank", 0);
 
     BORRARCONTADORES = LOW;
     lcd.clear();
@@ -648,8 +646,6 @@ void loop() {
   unsigned int dato1, dato2, dato3;
   int dato4, auxtbarrera = 0;
 
-  graficar();  // Actualiza el LCD
-
   // Espera a que la señal de la pinza se ponga en HIGH
   while (digitalRead(EPINZA) == LOW && AUX < 5) {
     CTIEMPO++;
@@ -666,18 +662,6 @@ void loop() {
 
     // Leer monedas
     leecoin();
-
-    if (PJFIJO != prevPJFIJO || PPFIJO != prevPPFIJO || BANK != prevBANK) {
-      dato1 = PAGO;
-      dato2 = PJFIJO;
-      dato3 = PPFIJO;
-      dato4 = BANK;
-      sendDataToPHP(device_id, dato1, dato2, dato3, dato4);
-      prevPAGO = PAGO;
-      prevPJFIJO = PJFIJO;
-      prevPPFIJO = PPFIJO;
-      prevBANK = BANK;
-    }
 
     // Control de la rutina de programación
     if (digitalRead(DATO3) == LOW) {
@@ -730,10 +714,6 @@ void loop() {
     BANKTIEMPO++;
   }
 
-preferences.putInt("bank", BANK); 
-preferences.putInt("pjfijo", PJFIJO); 
-preferences.putInt("coin", COIN);  
-
   Z = random(5);  // Valor aleatorio para el control de la pinza
 
   // Si el crédito es suficiente y el valor aleatorio cumple la condición
@@ -745,8 +725,6 @@ preferences.putInt("coin", COIN);
     // Control de las aperturas temporales en la señal de la pinza mientras la pinza vuelve a home
 
     while (auxtbarrera == HIGH) {
-
-
       while (X < 3000) {  // comienza retardo de lectura de barrera
         if (digitalRead(EPINZA) == HIGH) {
           X = 0;
@@ -854,6 +832,24 @@ preferences.putInt("coin", COIN);
 
   // Apagar la pinza después de terminar
   analogWrite(SPINZA, 0);  // Apagar la pinza (duty cycle 0)
+
+  graficar();  // Actualiza el LCD
+  if (PJFIJO != prevPJFIJO || PPFIJO != prevPPFIJO || BANK != prevBANK) {
+    dato1 = PAGO;
+    dato2 = PJFIJO;
+    dato3 = PPFIJO;
+    dato4 = BANK;
+    sendDataToPHP(device_id, dato1, dato2, dato3, dato4);
+    prevPAGO = PAGO;
+    prevPJFIJO = PJFIJO;
+    prevPPFIJO = PPFIJO;
+    prevBANK = BANK;
+
+    preferences.putInt("bank", BANK);
+    preferences.putInt("pjfijo", PJFIJO);
+    preferences.putInt("coin", COIN);
+  }
+
   TIEMPO8 = 0;
   X = 0;
   A = 0;
