@@ -705,11 +705,6 @@ void loop() {
 
   graficar();  // Actualizar LCD con nuevos valores
 
-  // Incremento periódico de COIN, BANK, PJFIJO
-  COIN++;
-  BANK++;
-  PJFIJO++;
-
   if (BANKTIEMPO < 10) {
     BANKTIEMPO++;
   }
@@ -723,7 +718,10 @@ void loop() {
     delay(2000);               // Esperar 2 segundos
     auxtbarrera = HIGH;
     // Control de las aperturas temporales en la señal de la pinza mientras la pinza vuelve a home
-
+      // Incremento periódico de COIN, BANK, PJFIJO
+    COIN++;
+    BANK++;
+    PJFIJO++;
     while (auxtbarrera == HIGH) {
       while (X < 3000) {  // comienza retardo de lectura de barrera
         if (digitalRead(EPINZA) == HIGH) {
@@ -761,7 +759,10 @@ void loop() {
     // Bloque de cierre de la pinza cuando no hay pago
     analogWrite(SPINZA, 255);  // Cerrar la pinza completamente (duty cycle máximo)
     delay(TIEMPO5);            // Esperar según TIEMPO5
-
+      // Incremento periódico de COIN, BANK, PJFIJO
+    COIN++;
+    BANK++;
+    PJFIJO++;
     // Ajustar la fuerza de la pinza dependiendo del banco
     FUERZAAUX2 = FUERZA;
     if (BANK <= -10) {
