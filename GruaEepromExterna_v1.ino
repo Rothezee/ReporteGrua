@@ -1,5 +1,5 @@
 // esta vercion esta en prueba en la maquina gold digger
-/*Vercion Octubre 2024 
+/*Vercion Julio 2025
 -Se agregaron funciones de wifi y web.
 -Tiene una funcion en segundo plano para enviar un pulso a la base de datos.
 -Envia datos a la base que se visualizan en la web.
