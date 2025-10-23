@@ -1,5 +1,5 @@
 // esta vercion esta en prueba en la maquina gold digger
-/*Vercion Julio 2025
+/*Vercion Octubre 2024 
 -Se agregaron funciones de wifi y web.
 -Tiene una funcion en segundo plano para enviar un pulso a la base de datos.
 -Envia datos a la base que se visualizan en la web.
@@ -46,11 +46,11 @@ unsigned long X = 0;
  int TIEMPOAUX = 0;//variable auxiliar sistema de tiempo de la pinza
  int B = 0;
  int A = 0;
- int PAGO = 20;
+ int16_t PAGO = 20;
  int BARRERA = 0;
  int CLEAR = 0;
  unsigned int COIN ;
- int BANK = 0;
+ int16_t BANK = 0;
  unsigned int BANKTIEMPO = 0;
  unsigned int CONTSALIDA ;
   unsigned int Y ;//no se usa actualmente, era para dividir entrada /salida
@@ -62,8 +62,8 @@ int AUX = 0;// variable usada para evitar ruido en cierre de pinza
 int CREDITO = 0;//variable usada para los creditos
 int AUXCOIN = 0;
 int AUX2COIN = 0;
-int FUERZA = 50;
-int INICIO = 0;
+int16_t FUERZA = 50;
+int16_t INICIO = 0;
 int BORRARCONTADORES = LOW;
 unsigned int PJFIJO = 0;
 unsigned int PPFIJO = 0;
@@ -72,15 +72,15 @@ float FUERZAAUX = 0;
 float FUERZAV = 0;
 int TIEMPOAUX1 = 0;
 int FUERZAAUX2 = 0;
-int GRUADISPLAY = 0;
-int BARRERAAUX2 = 0;
+int16_t GRUADISPLAY = 0;
+int16_t BARRERAAUX2 = 0;
 char DAT;
 int TIEMPO7 = 0;
 unsigned long TIEMPO8 = 0;
 //char MENSAJE = "" ;
 int TIEMPO9 = 0;
 int AUXSIM = 0;
-int TIEMPO5 = 0;
+int16_t TIEMPO5 = 0;
 int prevPJFIJO = 0;
 int prevPPFIJO = 0;
 int prevBANK = 0;
@@ -451,77 +451,348 @@ void ajustebarrera() {
         }
     }
 }
+// Añadir esta función antes de setup()
+  bool leerBotonConDebounce(int pin, int delayMs = 50) {
+      if (digitalRead(pin) == LOW) {
+          delay(delayMs);  // Debounce
+          if (digitalRead(pin) == LOW) {
+              // Esperar a que se suelte el botón
+              while (digitalRead(pin) == LOW) {
+                  delay(10);
+              }
+              delay(50);  // Delay adicional después de soltar
+              return true;
+          }
+      }
+      return false;
+  }
 
-   void programar (){
-
-     lcd.clear ();lcd.setCursor(0,0);lcd.print("VERSION 1.7");  lcd.setCursor(0,1);lcd.print("24/5/24");delay (500);
-      while (digitalRead(DATO3) == HIGH) { delay (20);} 
-
-    lcd.clear ();lcd.setCursor(0,0);lcd.print("PJ:");lcd.setCursor(4,0);lcd.print(PJFIJO);
-    lcd.setCursor(0,1);lcd.print("PP:");lcd.setCursor(4,1);lcd.print(PPFIJO); delay (500);
-    while (digitalRead(DATO3) == HIGH) { delay (20);}GRUADISPLAY = 0;
-
-    graficar (); delay (500);
-     while (digitalRead(DATO3) == HIGH) { delay (20);}GRUADISPLAY = getEEPROM(37);
- 
-    lcd.clear ();lcd.setCursor(0,0);lcd.print("BORRA CONTADORES");  lcd.setCursor(0,1);lcd.print("NO");delay (500);
-     while (digitalRead(DATO3) == HIGH){ 
-   if (digitalRead(DATO6) == LOW){BORRARCONTADORES = HIGH;lcd.setCursor(0,1);lcd.print("SI"); delay (500);}
-   if (digitalRead(DATO10) == LOW) {BORRARCONTADORES = LOW;lcd.setCursor(0,1);lcd.print("NO");  delay (500);} }
-   if (BORRARCONTADORES == HIGH){ putEEPROMUint(1, 0); putEEPROMUint(5, 0); putEEPROM(9, 0);
-    COIN = getEEPROMUint(1); CONTSALIDA = getEEPROMUint(5); BANK = getEEPROM(9);
-   BORRARCONTADORES = LOW ;lcd.clear ();lcd.setCursor(0,0);lcd.print("BORRADOS");delay (1000);  } 
+   void programar() {
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("VERSION 1.7");
+    lcd.setCursor(0,1);
+    lcd.print("24/5/24");
+    delay(500);
     
-
-     lcd.clear ();lcd.setCursor(0,0);lcd.print("Display Modo");
-     if(GRUADISPLAY == 0){lcd.setCursor(0,1);lcd.print("Modo Contadores");}
-     if(GRUADISPLAY == 1){lcd.setCursor(0,1);lcd.print("Modo Coin");}delay (500);
-    while (digitalRead(DATO3) == HIGH) {
-   if (digitalRead(DATO6) == LOW){GRUADISPLAY = 0;lcd.setCursor(0,1);lcd.print("Modo Contadores"); }
-   if (digitalRead(DATO10) == LOW ) {GRUADISPLAY = 1 ;lcd.setCursor(0,1);lcd.print("Modo Coin"); }
-   }putEEPROM(37, GRUADISPLAY);
-     
-    lcd.clear ();lcd.setCursor(0,0);lcd.print("AJUSTAR PAGO"); delay (500);
-   while (digitalRead(DATO3) == HIGH){  lcd.setCursor(0,1);lcd.print(PAGO);delay (100);
-   if (digitalRead(DATO6) == LOW){PAGO ++;lcd.setCursor(0,1);lcd.print(PAGO); delay (400);}
-   if (digitalRead(DATO10) == LOW) {PAGO --;lcd.setCursor(0,1);lcd.print(PAGO);  delay (400);}
-   } putEEPROM(13, PAGO);
-   
-     lcd.clear ();lcd.setCursor(0,0);lcd.print("AJUSTAR TIEMPO"); delay (500);  
-    while (digitalRead(DATO3) == HIGH) {  lcd.setCursor(0,1);lcd.print(TIEMPO);delay(100);
-   if (digitalRead(DATO6) == LOW && TIEMPO < 5000){TIEMPO = (TIEMPO +10);lcd.setCursor(0,1);lcd.print(TIEMPO); }
-   if (digitalRead(DATO10) == LOW && TIEMPO > 500) {TIEMPO = (TIEMPO -10);lcd.setCursor(0,1);lcd.print(TIEMPO); }
-   } putEEPROM(17, TIEMPO);
+    // Esperar a que se suelte DATO3 si está presionado
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);  // Delay adicional
     
-     lcd.clear ();lcd.setCursor(0,0);lcd.print("TIEMPO F. FUERTE"); delay (500);  
-    while (digitalRead(DATO3) == HIGH) {  lcd.setCursor(0,1);lcd.print(TIEMPO5);delay(100);
-   if (digitalRead(DATO6) == LOW && TIEMPO5 < 5000){TIEMPO5 = (TIEMPO5 +10);lcd.setCursor(0,1);lcd.print(TIEMPO5); }
-   if (digitalRead(DATO10) == LOW && TIEMPO5 > 0) {TIEMPO5 = (TIEMPO5 -10);lcd.setCursor(0,1);lcd.print(TIEMPO5); }
-   } putEEPROM(41, TIEMPO5);
-
-   
-    lcd.clear ();lcd.setCursor(0,0);lcd.print("AJUSTAR FUERZA");delay (500);
-    while (digitalRead(DATO3) == HIGH) { lcd.setCursor(0,1);lcd.print(FUERZA);delay(100);
-   if (digitalRead(DATO6) == LOW && FUERZA < 101){FUERZA ++;lcd.setCursor(0,1);lcd.print(FUERZA); }
-   if (digitalRead(DATO10) == LOW && FUERZA > 5) {FUERZA --;lcd.setCursor(0,1);lcd.print(FUERZA); }
-   } putEEPROM(21, FUERZA);
-   
-     lcd.clear ();lcd.setCursor(0,0);lcd.print("TIPO BARRERA");
-     if(BARRERAAUX2 == 0){lcd.setCursor(0,1);lcd.print("INFRARROJO");}
-     if(BARRERAAUX2 == 1){lcd.setCursor(0,1);lcd.print("ULTRASONIDO");}delay (500);
+    // Esperar a que se presione DATO3
     while (digitalRead(DATO3) == HIGH) {
-   if (digitalRead(DATO6) == LOW ){BARRERAAUX2 = 0;lcd.setCursor(0,1);lcd.print("INFRARROJO"); }
-   if (digitalRead(DATO10) == LOW ) {BARRERAAUX2 = 1 ;lcd.setCursor(0,1);lcd.print("ULTRASONIDO"); }
-   }putEEPROM(33, BARRERAAUX2);
-   
-     lcd.clear ();lcd.setCursor(0,0);lcd.print("PRUEBA BARRERA"); delay (500);
-     while (digitalRead(DATO3) == HIGH) { lcd.setCursor(0,1);lcd.print(distancia);
-    lcd.setCursor (8,1);lcd.print (RDISTANCIA); ajustebarrera ();
-    if (BARRERA == HIGH){lcd.setCursor (0,1);lcd.print("###");delay(1000);BARRERA = LOW; }}
-     
-     graficar ();delay (500);
-     
-   }
+        delay(20);
+    }
+    // Esperar a que se suelte
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+
+    // Pantalla PJ/PP
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("PJ:");
+    lcd.setCursor(4,0);
+    lcd.print(PJFIJO);
+    lcd.setCursor(0,1);
+    lcd.print("PP:");
+    lcd.setCursor(4,1);
+    lcd.print(PPFIJO);
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        delay(20);
+    }
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    GRUADISPLAY = 0;
+    graficar();
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        delay(20);
+    }
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    GRUADISPLAY = getEEPROM(37);
+
+    // BORRA CONTADORES con debounce mejorado
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("BORRA CONTADORES");
+    lcd.setCursor(0,1);
+    lcd.print("NO");
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        if (leerBotonConDebounce(DATO6)) {
+            BORRARCONTADORES = HIGH;
+            lcd.setCursor(0,1);
+            lcd.print("SI");
+        }
+        if (leerBotonConDebounce(DATO10)) {
+            BORRARCONTADORES = LOW;
+            lcd.setCursor(0,1);
+            lcd.print("NO");
+        }
+        delay(10);
+    }
+    
+    // Esperar a que se suelte DATO3
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    if (BORRARCONTADORES == HIGH) {
+        putEEPROMUint(1, 0);
+        putEEPROMUint(5, 0);
+        putEEPROM(9, 0);
+        COIN = 0;
+        CONTSALIDA = 0;
+        BANK = 0;
+        BORRARCONTADORES = LOW;
+        lcd.clear();
+        lcd.setCursor(0,0);
+        lcd.print("BORRADOS");
+        delay(1000);
+    }
+
+    // Display Modo
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Display Modo");
+    if(GRUADISPLAY == 0) {
+        lcd.setCursor(0,1);
+        lcd.print("Modo Contadores");
+    }
+    if(GRUADISPLAY == 1) {
+        lcd.setCursor(0,1);
+        lcd.print("Modo Coin");
+    }
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        if (leerBotonConDebounce(DATO6)) {
+            GRUADISPLAY = 0;
+            lcd.clear();
+            lcd.setCursor(0,0);
+            lcd.print("Display Modo");
+            lcd.setCursor(0,1);
+            lcd.print("Modo Contadores");
+        }
+        if (leerBotonConDebounce(DATO10)) {
+            GRUADISPLAY = 1;
+            lcd.clear();
+            lcd.setCursor(0,0);
+            lcd.print("Display Modo");
+            lcd.setCursor(0,1);
+            lcd.print("Modo Coin");
+        }
+        delay(10);
+    }
+    
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    putEEPROM(37, GRUADISPLAY);
+
+    // AJUSTAR PAGO
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("AJUSTAR PAGO");
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        lcd.setCursor(0,1);
+        lcd.print("   ");  // Limpiar
+        lcd.setCursor(0,1);
+        lcd.print(PAGO);
+        
+        if (leerBotonConDebounce(DATO6)) {
+            PAGO++;
+        }
+        if (leerBotonConDebounce(DATO10)) {
+            PAGO--;
+        }
+        delay(10);
+    }
+    
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    putEEPROM(13, PAGO);
+
+    // AJUSTAR TIEMPO
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("AJUSTAR TIEMPO");
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        lcd.setCursor(0,1);
+        lcd.print("     ");  // Limpiar
+        lcd.setCursor(0,1);
+        lcd.print(TIEMPO);
+        
+        if (leerBotonConDebounce(DATO6) && TIEMPO < 5000) {
+            TIEMPO += 10;
+        }
+        if (leerBotonConDebounce(DATO10) && TIEMPO > 500) {
+            TIEMPO -= 10;
+        }
+        delay(10);
+    }
+    
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    putEEPROM(17, TIEMPO);
+
+    // TIEMPO F. FUERTE
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("TIEMPO F. FUERTE");
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        lcd.setCursor(0,1);
+        lcd.print("     ");  // Limpiar
+        lcd.setCursor(0,1);
+        lcd.print(TIEMPO5);
+        
+        if (leerBotonConDebounce(DATO6) && TIEMPO5 < 5000) {
+            TIEMPO5 += 10;
+        }
+        if (leerBotonConDebounce(DATO10) && TIEMPO5 > 0) {
+            TIEMPO5 -= 10;
+        }
+        delay(10);
+    }
+    
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    putEEPROM(41, TIEMPO5);
+
+    // AJUSTAR FUERZA
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("AJUSTAR FUERZA");
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        lcd.setCursor(0,1);
+        lcd.print("   ");  // Limpiar
+        lcd.setCursor(0,1);
+        lcd.print(FUERZA);
+        
+        if (leerBotonConDebounce(DATO6) && FUERZA < 101) {
+            FUERZA++;
+        }
+        if (leerBotonConDebounce(DATO10) && FUERZA > 5) {
+            FUERZA--;
+        }
+        delay(10);
+    }
+    
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    putEEPROM(21, FUERZA);
+
+    // TIPO BARRERA
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("TIPO BARRERA");
+    if(BARRERAAUX2 == 0) {
+        lcd.setCursor(0,1);
+        lcd.print("INFRARROJO");
+    }
+    if(BARRERAAUX2 == 1) {
+        lcd.setCursor(0,1);
+        lcd.print("ULTRASONIDO");
+    }
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        if (leerBotonConDebounce(DATO6)) {
+            BARRERAAUX2 = 0;
+            lcd.clear();
+            lcd.setCursor(0,0);
+            lcd.print("TIPO BARRERA");
+            lcd.setCursor(0,1);
+            lcd.print("INFRARROJO");
+        }
+        if (leerBotonConDebounce(DATO10)) {
+            BARRERAAUX2 = 1;
+            lcd.clear();
+            lcd.setCursor(0,0);
+            lcd.print("TIPO BARRERA");
+            lcd.setCursor(0,1);
+            lcd.print("ULTRASONIDO");
+        }
+        delay(10);
+    }
+    
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+    
+    putEEPROM(33, BARRERAAUX2);
+
+    // PRUEBA BARRERA
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("PRUEBA BARRERA");
+    delay(500);
+    
+    while (digitalRead(DATO3) == HIGH) {
+        lcd.setCursor(0,1);
+        lcd.print("        ");  // Limpiar
+        lcd.setCursor(0,1);
+        lcd.print(distancia);
+        lcd.setCursor(8,1);
+        lcd.print(RDISTANCIA);
+        ajustebarrera();
+        
+        if (BARRERA == HIGH) {
+            lcd.setCursor(0,1);
+            lcd.print("###");
+            delay(1000);
+            BARRERA = LOW;
+        }
+        delay(50);
+    }
+    
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+
+    graficar();
+    delay(500);
+}
 
 void loop() {
 
