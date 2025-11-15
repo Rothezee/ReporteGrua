@@ -763,7 +763,7 @@ void loop() {
         if (AUXDATO3 >= 30) {
             tickerPulso.detach(); // Detener heartbeat durante programación
             programar();
-            tickerPulso.attach(60, enviarPulsoMQTT); // Reactivar heartbeat
+            tickerPulso.attach(60, marcarHeartbeat); // Reactivar heartbeat
             AUXDATO3 = 0;
             return; // Reiniciar loop
         }
