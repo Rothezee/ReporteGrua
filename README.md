@@ -271,7 +271,7 @@ EEPROM.get(address, variable);
 
 ---
 
-## 🔧 Migración a EEPROM Externa I2C (Opcional)
+## 🔧 Migración a EEPROM Externa I2C
 
 Si necesitas usar una **EEPROM externa I2C** (como 24C32, 24C64) en lugar de la interna:
 
