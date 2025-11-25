@@ -1,8 +1,8 @@
 -----
 
-# 🤖 Firmware para Máquina Grúa "Gold Digger" (ESP32) - Versión MQTT Dual Memory
+# 🤖 Firmware para Máquina Grúa (ESP32) - Versión MQTT Dual Memory
 
-Este firmware está diseñado para controlar una máquina de premios (tipo grúa "Gold Digger") utilizando un microcontrolador ESP32.
+Este firmware está diseñado para controlar una máquina de premios tipo grua utilizando un microcontrolador ESP32.
 
 El sistema gestiona la lógica de juego, el monedero, los sensores de premio, la fuerza de la pinza y la conectividad WiFi/MQTT para reportar estadísticas en tiempo real a un servidor remoto.
 
