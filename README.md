@@ -420,7 +420,7 @@ Reconectando WiFi...
 
 ## 📄 Licencia
 
-Este firmware es proporcionado "tal cual" para uso educativo y comercial.
+Se reservan todos los derechos.
 
 ---
 
