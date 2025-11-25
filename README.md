@@ -26,7 +26,7 @@ El sistema gestiona la lógica de juego, el monedero, los sensores de premio, la
 
 ## 🔌 Hardware y Conexiones
 
-### Mapa de Pines (ESP32 DevKit V1)
+ ### Mapa de Pines (WEMOS D1 R32)
 
 | Componente | Pin ESP32 | Función |
 | :--- | :--- | :--- |
