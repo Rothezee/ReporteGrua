@@ -1,7 +1,3 @@
-¡Claro que sí, Alan\! Aquí tienes el **README.md** actualizado, reflejando exactamente el estado final del proyecto: un sistema **Dual (Híbrido)** que soporta tanto la memoria interna como la externa con un simple cambio de configuración, y que opera bajo el protocolo MQTT de forma robusta.
-
-Puedes copiar y pegar este contenido directamente en tu repositorio o archivo de documentación.
-
 -----
 
 # 🤖 Firmware para Máquina Grúa "Gold Digger" (ESP32) - Versión MQTT Dual Memory
