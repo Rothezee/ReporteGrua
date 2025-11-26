@@ -114,50 +114,58 @@ const long wifiCheckInterval = 30000;
 // FUNCIONES DE MEMORIA HÍBRIDA (INTERNA / EXTERNA)
 // ============================================================================
 
-// --- BAJO NIVEL (SOLO PARA EXTERNA) ---
-void writeI2CByte(int address, byte data) {
-  Wire.beginTransmission(EEPROM_I2C_ADDRESS);
-  Wire.write((int)(address >> 8));
-  Wire.write((int)(address & 0xFF));
-  Wire.write(data);
+// --- FUNCIONES DE BAJO NIVEL PARA EEPROM EXTERNA ---
+void writeEEPROM(int address, byte data) {
+  // Leer el valor actual
+  byte deviceAddress = EEPROM_I2C_ADDRESS | ((address >> 8) & 0x01);  // Bit A8 en dirección I2C
+  Wire.beginTransmission(deviceAddress);
+  Wire.write((byte)(address & 0xFF));
   Wire.endTransmission();
-  delay(5);
+  Wire.requestFrom(deviceAddress, (byte)1);
+  
+  byte current = 0xFF;
+  if (Wire.available()) {
+    current = Wire.read();
+  }
+  
+  // Si es diferente, escribir
+  if (current != data) {
+    Wire.beginTransmission(deviceAddress);
+    Wire.write((byte)(address & 0xFF));  // Dirección interna (0-255)
+    Wire.write(data);
+    Wire.endTransmission();
+    delay(5);  // Tiempo típico de escritura
+  }
 }
 
-byte readI2CByte(int address) {
-  byte rdata = 0xFF;
-  Wire.beginTransmission(EEPROM_I2C_ADDRESS);
-  Wire.write((int)(address >> 8));
-  Wire.write((int)(address & 0xFF));
+byte readEEPROM(int address) {
+  byte data = 0xFF;
+  byte deviceAddress = EEPROM_I2C_ADDRESS | ((address >> 8) & 0x01);  // Bit A8
+  Wire.beginTransmission(deviceAddress);
+  Wire.write((byte)(address & 0xFF));
   Wire.endTransmission();
-  Wire.requestFrom(EEPROM_I2C_ADDRESS, 1);
-  if (Wire.available()) rdata = Wire.read();
-  return rdata;
+  Wire.requestFrom(deviceAddress, (byte)1);
+  if (Wire.available()) {
+    data = Wire.read();
+  }
+  return data;
 }
 
-// --- ALTO NIVEL (SELECTOR AUTOMÁTICO) ---
+// --- FUNCIONES DE ALTO NIVEL (SELECTOR AUTOMÁTICO) ---
 
 // Escribir Entero (16 bits)
 void putEEPROM(int address, int value) {
   if (USAR_EEPROM_EXTERNA == 1) {
-    // Lógica Externa (Manual byte a byte)
-    byte lowByte = (value & 0xFF);
-    byte highByte = ((value >> 8) & 0xFF);
-    
-    // Leemos primero para no desgastar si es igual
-    byte currentLow = readI2CByte(address);
-    byte currentHigh = readI2CByte(address + 1);
-    
-    if (currentLow != lowByte) writeI2CByte(address, lowByte);
-    if (currentHigh != highByte) writeI2CByte(address + 1, highByte);
-    
+    // Lógica Externa con tus funciones
+    writeEEPROM(address, (value >> 8) & 0xFF);     // MSB
+    writeEEPROM(address + 1, value & 0xFF);        // LSB
   } else {
     // Lógica Interna (Librería EEPROM)
     int16_t current;
     EEPROM.get(address, current);
     if (current != value) {
       EEPROM.put(address, (int16_t)value);
-      EEPROM.commit(); // Importante en ESP32
+      EEPROM.commit();
     }
   }
 }
@@ -165,17 +173,11 @@ void putEEPROM(int address, int value) {
 // Escribir Unsigned Int (32 bits)
 void putEEPROMUint(int address, unsigned int value) {
   if (USAR_EEPROM_EXTERNA == 1) {
-    // Lógica Externa
-    byte b0 = (value & 0xFF);
-    byte b1 = ((value >> 8) & 0xFF);
-    byte b2 = ((value >> 16) & 0xFF);
-    byte b3 = ((value >> 24) & 0xFF);
-    
-    if (readI2CByte(address) != b3) writeI2CByte(address, b3); // MSB (Tu logica original guarda MSB en addr)
-    if (readI2CByte(address+1) != b2) writeI2CByte(address+1, b2);
-    if (readI2CByte(address+2) != b1) writeI2CByte(address+2, b1);
-    if (readI2CByte(address+3) != b0) writeI2CByte(address+3, b0); // LSB
-    
+    // Lógica Externa con tus funciones
+    writeEEPROM(address, (value >> 24) & 0xFF);    // MSB
+    writeEEPROM(address + 1, (value >> 16) & 0xFF);
+    writeEEPROM(address + 2, (value >> 8) & 0xFF);
+    writeEEPROM(address + 3, value & 0xFF);        // LSB
   } else {
     // Lógica Interna
     uint32_t current;
@@ -191,12 +193,10 @@ void putEEPROMUint(int address, unsigned int value) {
 int getEEPROM(int address) {
   int value = 0;
   if (USAR_EEPROM_EXTERNA == 1) {
-    byte lowByte = readI2CByte(address);     // OJO: En tu codigo original getEEPROM hace:
-    byte highByte = readI2CByte(address + 1); // (read(addr) << 8) | read(addr+1)
-    // Tu lógica original era Big Endian (MSB primero) en la lectura manual
-    // Adaptamos para mantener compatibilidad con TU chip:
-    value = (readI2CByte(address) << 8) | readI2CByte(address + 1);
+    // Lógica Externa con tus funciones
+    value = (readEEPROM(address) << 8) | readEEPROM(address + 1);
   } else {
+    // Lógica Interna
     int16_t val16;
     EEPROM.get(address, val16);
     value = val16;
@@ -208,12 +208,13 @@ int getEEPROM(int address) {
 unsigned int getEEPROMUint(int address) {
   unsigned int value = 0;
   if (USAR_EEPROM_EXTERNA == 1) {
-    // Tu lógica original Big Endian
-    value = ((unsigned int)readI2CByte(address) << 24) |
-            ((unsigned int)readI2CByte(address + 1) << 16) |
-            ((unsigned int)readI2CByte(address + 2) << 8) |
-            ((unsigned int)readI2CByte(address + 3));
+    // Lógica Externa con tus funciones
+    value = ((unsigned int)readEEPROM(address) << 24) |
+            ((unsigned int)readEEPROM(address + 1) << 16) |
+            ((unsigned int)readEEPROM(address + 2) << 8) |
+            (unsigned int)readEEPROM(address + 3);
   } else {
+    // Lógica Interna
     uint32_t val32;
     EEPROM.get(address, val32);
     value = val32;
