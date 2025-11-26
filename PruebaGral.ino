@@ -25,8 +25,8 @@
 
 // --- CONFIGURACIÓN WIFI Y BROKER ---
 const char* device_id = "ESP32_005";
-const char* ssid = "ezee";
-const char* password = "39090169";
+const char* ssid = "MOVISTAR-WIFI6-0160";
+const char* password = "46332714";
 
 // DATOS DE TU BROKER
 const char* mqtt_server = "broker.emqx.io"; 
