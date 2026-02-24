@@ -24,16 +24,16 @@
 #define EEPROM_SIZE_INTERNAL 512 // Tamaño para emulación en flash
 
 // --- CONFIGURACIÓN WIFI Y BROKER ---
-const char* device_id = "ESP32_005";
-const char* ssid = "MOVISTAR-WIFI6-0160";
-const char* password = "46332714";
+const char* device_id = "ESP32_003";
+const char* ssid = "TP-Link_466E";
+const char* password = "18458404";
 
 // DATOS DE TU BROKER
 const char* mqtt_server = "broker.emqx.io"; 
 const int mqtt_port = 1883;
 
-const char* topic_datos = "maquinas/ESP32_005/datos";
-const char* topic_heartbeat = "maquinas/ESP32_005/heartbeat";
+const char* topic_datos = "maquinas/ESP32_003/datos";
+const char* topic_heartbeat = "maquinas/ESP32_003/heartbeat";
 
 // --- PINES ---
 #define triger 13
@@ -109,6 +109,8 @@ int AUXDATO3 = 0;
 volatile bool debeEnviarHeartbeat = false;
 unsigned long lastWifiCheck = 0;
 const long wifiCheckInterval = 30000;
+
+unsigned long lastMqttReconnectAttempt = 0; //contador de reconexion mqtt
 
 // ============================================================================
 // FUNCIONES DE MEMORIA HÍBRIDA (INTERNA / EXTERNA)
@@ -242,14 +244,20 @@ void connectToWiFi() {
     }
 }
 
+
 void reconnectMQTT() {
-    if (!client.connected()) {
-        Serial.print("Conectando MQTT...");
+    // Solo intentamos reconectar cada 5 segundos para no bloquear la máquina
+    if (millis() - lastMqttReconnectAttempt > 5000) {
+        lastMqttReconnectAttempt = millis();
+        
+        Serial.print("Intentando reconexión MQTT...");
+        // Intentar conectar (esto es rápido y no bloquea)
         if (client.connect(device_id, "maquinas/status", 1, true, "offline")) {
             Serial.println("¡Conectado!");
             client.publish("maquinas/status", "online");
         } else {
-            Serial.print("Fallo rc="); Serial.println(client.state());
+            Serial.print("Fallo rc="); 
+            Serial.println(client.state());
         }
     }
 }
@@ -258,10 +266,10 @@ void enviarDatosMQTT(unsigned int dato1, unsigned int dato2, unsigned int dato3,
     if (!client.connected()) return;
     JsonDocument doc;
     doc["device_id"] = device_id;
-    doc["pago"] = dato1;
-    doc["partidas_jugadas"] = dato2;
-    doc["premios_pagados"] = dato3;
-    doc["banco"] = dato4;
+    doc["dato1"] = dato1;
+    doc["dato2"] = dato2;
+    doc["dato3"] = dato3;
+    doc["dato4"] = dato4;
     char buffer[256];
     serializeJson(doc, buffer);
     if(client.publish(topic_datos, buffer)) Serial.println("Datos MQTT enviados");
@@ -718,6 +726,9 @@ void setup() {
         Serial.println("MODO: EEPROM INTERNA (FLASH)");
     }
 
+    WiFi.setSleep(false); // Evita que el ESP32 apague la antena para ahorrar batería
+    WiFi.setAutoReconnect(true); // El chip ESP32 intentará reconectarse solo al router en segundo plano
+
     analogWriteFrequency(EPINZA, 100);
     lcd.init(); lcd.backlight();
 
@@ -798,6 +809,11 @@ void loop() {
     while (digitalRead(EPINZA) == LOW && AUX < 5) {
         client.loop();
 
+        //enviar heartbeat mientras la maquina este en espera
+        if (debeEnviarHeartbeat) {
+            enviarPulso();
+            debeEnviarHeartbeat = false;
+        }
         CTIEMPO++;
         if (digitalRead(EPINZA) == HIGH) AUX++;
         if (digitalRead(EPINZA) == LOW) AUX = 0;
@@ -832,6 +848,10 @@ void loop() {
                 if (BARRERAAUX == LOW) leerbarrera();
             }
         }
+        if (WiFi.status() == WL_CONNECTED) {
+            if (!client.connected()) reconnectMQTT();
+            client.loop();
+        }   
     }
 
     // --- SECUENCIA DE JUEGO ---
@@ -851,10 +871,12 @@ void loop() {
 
     // PINZA CON PREMIO
     if (PAGO <= BANK && Z <= 3) {
+        
         analogWrite(SPINZA, 250); delay(2000);
         auxtbarrera = HIGH;
         while (auxtbarrera == HIGH) {
             while(X < 3000){
+                client.loop();
                 if (digitalRead(EPINZA) == HIGH) X = 0;
                 if (X == 150) analogWrite(SPINZA, 0);
                 if (digitalRead(EPINZA) == LOW) { X++; delay(1); }
@@ -892,6 +914,8 @@ void loop() {
 
         while (auxtbarrera == HIGH) {
             while(X < 3000){
+                client.loop();
+
                 if (digitalRead(EPINZA) == HIGH) X = 0;
                 if (X == 150) analogWrite(SPINZA, 0);
                 if (digitalRead(EPINZA) == LOW) { X++; delay(1); }
