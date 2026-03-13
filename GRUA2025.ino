@@ -1,857 +1,707 @@
-// esta vercion esta en prueba en la maquina gold digger
-/*Vercion Mayo de 2025
--Se agregaron funciones de wifi y web.
--Tiene una funcion en segundo plano para enviar un pulso a la base de datos.
--Envia datos a la base que se visualizan en la web.
--Inclucion de bibliotecas como Arduino.h, HTTPClient, ArduinoJson, Ticker, WiFi, Wire.
--Cambio la libreria EEPROM.h por la libreria Preferences.h*/
+// Gigga
+// Marzo 2026
+// Protocolo: MQTT
+// Memoria: Seleccionable (Interna ESP32 o Externa I2C)
+
+// ==========================================
+// 🎚️ CONFIGURACIÓN DE MEMORIA (TOCA ACA)
+// ==========================================
+// 0 = Memoria Interna (Para pruebas sin chip)
+// 1 = Memoria Externa (Para producción con AT24C32)
+#define USAR_EEPROM_EXTERNA 0
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <Arduino.h>
-#include <Preferences.h>
 #include <WiFi.h>
-#include <HTTPClient.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <Ticker.h>  // Agregar la biblioteca Ticker
+#include <Ticker.h>
+#include <EEPROM.h>
 
-Preferences preferences;  //crea un objeto de tipo Preferences
+// ============================================================================
+// EEPROM - DIRECCIONES
+// ============================================================================
+#define DIR_JUGADAS       1
+#define DIR_PREMIOS       5
+#define DIR_BANCO         9
+#define DIR_PAGO          13
+#define DIR_T_AGARRE      17
+#define DIR_FUERZA        21
+#define DIR_JUGADAS_TOT   25
+#define DIR_PREMIOS_TOT   29
+#define DIR_TIPO_BARRERA  33
+#define DIR_MODO_DISP     37
+#define DIR_T_FUERTE      41
+#define DIR_INICIO_CHECK  45
+#define VAL_INICIO_CHECK  35
 
-int lcdColumns = 16;
-int lcdRows = 2;
-LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
+// ============================================================================
+// EEPROM - CONFIGURACIÓN
+// ============================================================================
+#define EEPROM_DIR_I2C  0x50
+#define EEPROM_TAM      512
 
-const char* device_id = "ESP32_005";
-const char* ssid = "MOVISTAR-WIFI6-0160";
-const char* password = "46332714";
-const char* serverAddress = "https://maquinasbonus.com/esp32_project/insert_data.php";
-const char* serverAddress1 = "https://maquinasbonus.com/esp32_project/insert_heartbeat.php";
+// ============================================================================
+// PINES
+// ============================================================================
+#define PIN_TRIGGER      13   // Trigger ultrasonido
+#define PIN_ECHO         12   // Echo ultrasonido
+#define PIN_LUZ          19   // Salida de luz
+#define PIN_BARR_IR      14   // Sensor barrera infrarrojo
+#define PIN_MOTOR        17   // Motor pinza (PWM)
+#define PIN_SENS_POS     16   // Sensor posición pinza
+#define PIN_BTN_BAJA     35   // Botón bajar valor en menú
+#define PIN_SENS_PREMIO  27   // Sensor detección de premio
+#define PIN_BTN_SUBE     34   // Botón subir valor en menú
+#define PIN_BTN_MENU      4   // Botón menú / confirmar
+#define PIN_MONEDA       26   // Sensor de moneda
+#define PIN_CREDITO      25   // Salida de crédito
 
-#define triger 13
-#define echo 12
-#define DATO11 19
-#define DATO7 14
-#define DATO3 4
-#define DATO5 25
-#define EPINZA 17
-#define SPINZA 16
-#define DATO6 34
-#define DATO10 35
-#define DATO12 27
-#define ECOIN 26
+// ============================================================================
+// WIFI Y MQTT
+// ============================================================================
+const char* ID_DISP     = "ESP32_005";
+const char* WIFI_SSID   = "FIBRA-WIFI6-229F";
+const char* WIFI_CLAVE  = "46332714";
+const char* MQTT_SERVER = "broker.emqx.io";
+const int   MQTT_PUERTO = 1883;
+const char* TOPIC_DATOS = "maquinas/ESP32_005/datos";
+const char* TOPIC_PULSO = "maquinas/ESP32_005/heartbeat";
 
-unsigned long X = 0;
-int RDISTANCIA = 0;  //referencia de distancia
-int TIEMPO = 0;
-int TIEMPOAUX = 0;  //variable auxiliar sistema de tiempo de la pinza
-int B = 0;
-int A = 0;
-int PAGO = 20;
-int BARRERA = 0;
-int CLEAR = 0;
-unsigned int COIN;
-int BANK = 0;
-unsigned int BANKTIEMPO = 0;
-unsigned int CONTSALIDA;
-unsigned int Y;  //no se usa actualmente, era para dividir entrada /salida
-int Z = 0;
-int distancia = 0;
-int tiempo = 0;
-unsigned int CTIEMPO = 0;
-int AUX = 0;      // variable usada para evitar ruido en cierre de pinza
-int CREDITO = 0;  //variable usada para los creditos
-int AUXCOIN = 0;
-int AUX2COIN = 0;
-int FUERZA = 50;
-int INICIO = 0;
-int BORRARCONTADORES = LOW;
-unsigned int PJFIJO = 0;
-unsigned int PPFIJO = 0;
-int BARRERAAUX = 0;
-float FUERZAAUX = 0;
-float FUERZAV = 0;
-int TIEMPOAUX1 = 0;
-int FUERZAAUX2 = 0;
-int GRUADISPLAY = 0;
-int BARRERAAUX2 = 0;
-char DAT;
-int TIEMPO7 = 0;
-unsigned long TIEMPO8 = 0;
-//char MENSAJE = "" ;
-int TIEMPO9 = 0;
-int AUXSIM = 0;
-int TIEMPO5 = 0;
-int prevPJFIJO = 0, prevBANK = 0, prevPPFIJO = 0, prevPAGO = 0;
+// ============================================================================
+// OBJETOS
+// ============================================================================
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+WiFiClient   clienteWifi;
+PubSubClient clienteMQTT(clienteWifi);
+Ticker       tickerPulso;
 
+// ============================================================================
+// VARIABLES: CONTADORES Y BALANCE
+// ============================================================================
+unsigned int jugadas     = 0;   // Jugadas en sesión            (antes: COIN)
+unsigned int premios     = 0;   // Premios entregados sesión    (antes: CONTSALIDA)
+int16_t      banco       = 0;   // Balance crédito/débito       (antes: BANK)
+unsigned int tBanco      = 0;   // Tiempo de vida del banco     (antes: BANKTIEMPO)
+unsigned int jugadasTot  = 0;   // Jugadas totales acumuladas   (antes: PJFIJO)
+unsigned int premiosTot  = 0;   // Premios totales acumulados   (antes: PPFIJO)
 
-int AUXDATO3 = 0;
+// ============================================================================
+// VARIABLES: CONFIGURACIÓN DE JUEGO
+// ============================================================================
+int16_t pago        = 20;   // Créditos para dar premio     (antes: PAGO)
+int16_t tAgarre     = 0;    // Tiempo de agarre pinza (ms)  (antes: TIEMPO)
+int16_t fuerza      = 50;   // Fuerza base pinza 0-100      (antes: FUERZA)
+int16_t tFuerte     = 0;    // Tiempo fuerza fuerte (ms)    (antes: TIEMPO5)
+int16_t modoDisp    = 0;    // 0=Contadores 1=Crédito       (antes: GRUADISPLAY)
+int16_t tipoBarr    = 0;    // 0=Infrarrojo 1=Ultrasonido   (antes: BARRERAAUX2)
 
-unsigned long lastUpdate = 0;      // Para controlar los incrementos de variables
-unsigned long lastSendTime = 0;    // Para controlar el envío de datos
-const long updateInterval = 1000;  // 1 segundo para actualizaciones
-const long sendInterval = 30000;   // 30 segundos para envío de datos
-const long barrera = 3000;         //espera para la barrera
+// ============================================================================
+// VARIABLES: SENSOR DE DISTANCIA
+// ============================================================================
+int distRef  = 0;   // Distancia calibrada en reposo    (antes: RDISTANCIA)
+int distAct  = 0;   // Distancia medida en tiempo real  (antes: distancia)
+int tEco     = 0;   // Tiempo de pulso eco en µs        (antes: tiempo)
 
-// Definir el ticker para ejecutar la función de envío del pulso cada 60 segundos
-Ticker tickerPulso;
+// ============================================================================
+// VARIABLES: BARRERA Y PREMIO
+// ============================================================================
+int barrActiva   = 0;   // Barrera detectó objeto           (antes: BARRERA)
+int premioDetect = 0;   // Premio confirmado en jugada       (antes: BARRERAAUX)
 
+// ============================================================================
+// VARIABLES: MONEDA Y CRÉDITO
+// ============================================================================
+int creditos   = 0;   // Créditos disponibles             (antes: CREDITO)
+int debMonSube = 0;   // Debounce subida moneda           (antes: AUXCOIN)
+int debMonBaja = 0;   // Debounce bajada moneda           (antes: AUX2COIN)
 
-void enviarPulso() {
-  // Comprobar si el WiFi está conectado
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(serverAddress1);  // Conectar al servidor
+// ============================================================================
+// VARIABLES: PINZA Y FUERZA
+// ============================================================================
+float fuerzaVar = 0;   // Fuerza actual interpolada        (antes: FUERZAV)
+float fuerzaDec = 0;   // Decremento de fuerza             (antes: FUERZAAUX)
+int   fuerzaAdj = 0;   // Fuerza ajustada según banco      (antes: FUERZAAUX2)
 
-    // Crear el mensaje JSON con el device_id
-    JsonDocument doc;
-    doc["device_id"] = device_id;
+// ============================================================================
+// VARIABLES: TEMPORIZACIÓN Y BUCLES
+// ============================================================================
+unsigned long cntPinza   = 0;   // Contador bucle espera pinza     (antes: X)
+int           debPinza   = 0;   // Debounce sensor pinza           (antes: AUX / A)
+int           pasoFuerza = 0;   // Índice paso de interpolación    (antes: TIEMPOAUX)
+int           delayPaso  = 0;   // Delay entre pasos de fuerza     (antes: TIEMPOAUX1)
+int           cntEspera  = 0;   // Contador ciclos idle            (antes: TIEMPO7)
+unsigned long tBarrCheck = 0;   // Timer chequeo barrera           (antes: TIEMPO8)
+int           cntBanco   = 0;   // Contador decremento banco       (antes: CTIEMPO)
+int16_t       inicio     = 0;   // Valor check inicialización      (antes: INICIO)
+int           cntMenuBtn = 0;   // Contador retención botón menú   (antes: AUXDATO3)
+int           simBarr    = 0;   // Flag simulación barrera IR      (antes: AUXSIM)
+int           borrarCont = LOW; // Flag borrar contadores          (antes: BORRARCONTADORES)
 
-    // Serializar el documento JSON
-    String postData;
-    serializeJson(doc, postData);
+// ============================================================================
+// VARIABLES: MQTT Y WIFI
+// ============================================================================
+volatile bool flagPulso    = false;
+unsigned long tUltReconMQTT= 0;
+int prevJugadasTot         = 0;   // (antes: prevPJFIJO)
+int prevPremiosTot         = 0;   // (antes: prevPPFIJO)
+int prevBanco              = 0;   // (antes: prevBANK)
 
-    // Añadir cabecera HTTP
-    http.addHeader("Content-Type", "application/json");
+// ============================================================================
+// FUNCIONES: EEPROM EXTERNA (I2C)
+// ============================================================================
+void escribirEEPROM(int dir, byte dato) {
+    byte dirDev = EEPROM_DIR_I2C | ((dir >> 8) & 0x01);
+    Wire.beginTransmission(dirDev);
+    Wire.write((byte)(dir & 0xFF));
+    Wire.endTransmission();
+    Wire.requestFrom(dirDev, (byte)1);
+    byte actual = 0xFF;
+    if (Wire.available()) actual = Wire.read();
+    if (actual != dato) {
+        Wire.beginTransmission(dirDev);
+        Wire.write((byte)(dir & 0xFF));
+        Wire.write(dato);
+        Wire.endTransmission();
+        delay(5);
+    }
+}
 
-    // Realizar la solicitud POST
-    int httpResponseCode = http.POST(postData);
+byte leerEEPROM(int dir) {
+    byte dato = 0xFF;
+    byte dirDev = EEPROM_DIR_I2C | ((dir >> 8) & 0x01);
+    Wire.beginTransmission(dirDev);
+    Wire.write((byte)(dir & 0xFF));
+    Wire.endTransmission();
+    Wire.requestFrom(dirDev, (byte)1);
+    if (Wire.available()) dato = Wire.read();
+    return dato;
+}
 
-    // Comprobar la respuesta del servidor
-    if (httpResponseCode > 0) {
-      Serial.println("Heartbeat enviado correctamente.");
+// ============================================================================
+// FUNCIONES: EEPROM ALTO NIVEL (selector interno/externo)
+// ============================================================================
+void guardarInt(int dir, int val) {
+    if (USAR_EEPROM_EXTERNA) {
+        escribirEEPROM(dir,     (val >> 8) & 0xFF);
+        escribirEEPROM(dir + 1,  val       & 0xFF);
     } else {
-      Serial.println("Error enviando el heartbeat: " + String(httpResponseCode));
+        int16_t actual;
+        EEPROM.get(dir, actual);
+        if (actual != val) { EEPROM.put(dir, (int16_t)val); EEPROM.commit(); }
     }
-
-    // Finalizar la conexión HTTP
-    http.end();
-  } else {
-    Serial.println("Error: WiFi desconectado.");
-  }
 }
 
-// Conectar a WiFi con reinicio seguro
-void connectToWiFi() {
-  WiFi.disconnect(true);  // Reinicia el WiFi completamente
-  delay(1000);
-
-  Serial.println("Conectando a WiFi...");
-  WiFi.begin(ssid, password);
-  int retryCount = 0;
-  while (WiFi.status() != WL_CONNECTED && retryCount < 20) {  // 20 intentos de conexión
-    delay(1000);
-    Serial.print(".");
-    retryCount++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi conectado");
-    Serial.print("Dirección IP del ESP32: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("Error: No se pudo conectar a WiFi.");
-  }
-}
-
-// Enviar datos a PHP cuando haya cambios en las variables
-void sendDataToPHP(const char* device_id, unsigned int dato1, unsigned int dato2, unsigned int dato3, int dato4) {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(serverAddress);
-
-    // Crear documento JSON
-    JsonDocument doc;
-    doc["device_id"] = device_id;
-    doc["dato1"] = dato1;
-    doc["dato2"] = dato2;
-    doc["dato3"] = dato3;
-    doc["dato4"] = dato4;
-
-    // Serializar JSON y enviarlo
-    String postData;
-    serializeJson(doc, postData);
-
-    http.addHeader("Content-Type", "application/json");
-    int httpResponseCode = http.POST(postData);
-
-    if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.println("Datos enviados: " + response);
+void guardarUInt(int dir, unsigned int val) {
+    if (USAR_EEPROM_EXTERNA) {
+        escribirEEPROM(dir,     (val >> 24) & 0xFF);
+        escribirEEPROM(dir + 1, (val >> 16) & 0xFF);
+        escribirEEPROM(dir + 2, (val >>  8) & 0xFF);
+        escribirEEPROM(dir + 3,  val        & 0xFF);
     } else {
-      Serial.println("Error enviando datos: " + String(httpResponseCode));
+        uint32_t actual;
+        EEPROM.get(dir, actual);
+        if (actual != val) { EEPROM.put(dir, (uint32_t)val); EEPROM.commit(); }
     }
-    http.end();
-  } else {
-    Serial.println("WiFi desconectado. No se pueden enviar datos.");
-  }
 }
 
-void setup() {
+int leerInt(int dir) {
+    if (USAR_EEPROM_EXTERNA) {
+        return (leerEEPROM(dir) << 8) | leerEEPROM(dir + 1);
+    } else {
+        int16_t val; EEPROM.get(dir, val); return val;
+    }
+}
 
-  Serial.begin(115200);
-  preferences.begin("storage", false);
+unsigned int leerUInt(int dir) {
+    if (USAR_EEPROM_EXTERNA) {
+        return ((unsigned int)leerEEPROM(dir)     << 24) |
+               ((unsigned int)leerEEPROM(dir + 1) << 16) |
+               ((unsigned int)leerEEPROM(dir + 2) <<  8) |
+                (unsigned int)leerEEPROM(dir + 3);
+    } else {
+        uint32_t val; EEPROM.get(dir, val); return val;
+    }
+}
 
-  analogWriteFrequency(EPINZA, 100);  //LOS PARAMETROS SON EL PIN Y LA FRECUENCIA
-
-  // Inicializar LCD
-  lcd.init();
-  lcd.backlight();
-
-  // Configuración de pines
-  pinMode(triger, OUTPUT);
-  pinMode(echo, INPUT);
-  pinMode(DATO7, INPUT_PULLUP);
-  pinMode(DATO5, OUTPUT);
-  pinMode(DATO3, INPUT_PULLUP);
-  pinMode(SPINZA, OUTPUT);
-  pinMode(EPINZA, INPUT_PULLUP);
-  pinMode(DATO11, OUTPUT);
-  pinMode(DATO6, INPUT_PULLUP);
-  pinMode(DATO10, INPUT_PULLUP);
-  pinMode(DATO12, INPUT_PULLUP);
-  pinMode(ECOIN, INPUT_PULLUP);
-
-  INICIO = preferences.getInt("inicio", 0);
-  if (INICIO != 35) {
-    preferences.putInt("coin", 0);
-    preferences.putInt("contsalida", 0);
-    preferences.putInt("bank", 0);
-    preferences.putInt("pago", 12);
-    preferences.putInt("tiempo", 2000);
-    preferences.putInt("fuerza", 50);
-    preferences.putInt("pjfijo", 0);
-    preferences.putInt("ppfijo", 0);
-    preferences.putInt("barreraaux2", 0);
-    preferences.putInt("gruaDisplay", 0);
-    preferences.putInt("tiempo5", 0);
-    preferences.putInt("inicio", 35);
-  }
-
-  COIN = preferences.getInt("coin", 0);
-  CONTSALIDA = preferences.getInt("contsalida", 0);
-  BANK = preferences.getInt("bank", 0);
-  PAGO = preferences.getInt("pago", 12);
-  TIEMPO = preferences.getInt("tiempo", 2000);
-  FUERZA = preferences.getInt("fuerza", 50);
-  PJFIJO = preferences.getInt("pjfijo", 0);
-  PPFIJO = preferences.getInt("ppfijo", 0);
-  BARRERAAUX2 = preferences.getInt("barreraaux2", 0);
-  GRUADISPLAY = preferences.getInt("gruaDisplay", 0);
-  TIEMPO5 = preferences.getInt("tiempo5", 0);
-
-  if (digitalRead(DATO3) == LOW) {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("CONT.FIJOS");
-    lcd.setCursor(0, 1);
-    lcd.print("PJ:");
-    lcd.setCursor(3, 1);
-    lcd.print(PJFIJO);
-    lcd.setCursor(9, 1);
-    lcd.print("PP:");
-    lcd.setCursor(12, 1);
-    lcd.print(PPFIJO);
+// ============================================================================
+// FUNCIONES: WIFI Y MQTT
+// ============================================================================
+void conectarWifi() {
+    if (WiFi.status() == WL_CONNECTED) return;
+    WiFi.disconnect(true);
     delay(1000);
-    while (digitalRead(DATO3) == HIGH) { delay(20); }
-  }
-  delay(1000);
-
-  Y = 2;
-
-  while (B <= 10) {  //hace una prueba con la barrera y determina la distancia para operar
-    digitalWrite(triger, LOW);
-    delayMicroseconds(2);
-    digitalWrite(triger, HIGH);
-    delayMicroseconds(10);
-    tiempo = pulseIn(echo, HIGH);
-    distancia = tiempo / 10;
-    RDISTANCIA = distancia;
-    B++;
-    delay(50);
-  }
-  graficar();
-  digitalWrite(DATO11, 1);              // inicializa el dato 11 mantiene a 0 el reset del sim 800
-  connectToWiFi();                      // Conectar a WiFi al inicio
-  tickerPulso.attach(60, enviarPulso);  // Ejecuta cada 60 segundos
+    Serial.println("Conectando a WiFi...");
+    WiFi.begin(WIFI_SSID, WIFI_CLAVE);
+    int intentos = 0;
+    while (WiFi.status() != WL_CONNECTED && intentos < 10) {
+        delay(500); Serial.print("."); intentos++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi Conectado");
+        Serial.print("IP: "); Serial.println(WiFi.localIP());
+    }
 }
 
-void graficar() {
-  if (GRUADISPLAY == 0) {
+void reconectarMQTT() {
+    if (millis() - tUltReconMQTT < 5000) return;
+    tUltReconMQTT = millis();
+    Serial.print("Reconectando MQTT...");
+    if (clienteMQTT.connect(ID_DISP, "maquinas/status", 1, true, "offline")) {
+        Serial.println("OK");
+        clienteMQTT.publish("maquinas/status", "online");
+    } else {
+        Serial.print("Error rc="); Serial.println(clienteMQTT.state());
+    }
+}
+
+void enviarDatos() {
+    if (!clienteMQTT.connected()) return;
+    JsonDocument doc;
+    doc["device_id"] = ID_DISP;
+    doc["dato1"]     = pago;
+    doc["dato2"]     = jugadasTot;
+    doc["dato3"]     = premiosTot;
+    doc["dato4"]     = banco;
+    char buf[256];
+    serializeJson(doc, buf);
+    if (clienteMQTT.publish(TOPIC_DATOS, buf)) Serial.println("Datos enviados MQTT");
+}
+
+void activarPulso() { flagPulso = true; }
+
+void enviarHeartbeat() {
+    if (!clienteMQTT.connected()) return;
+    JsonDocument doc;
+    doc["device_id"] = ID_DISP;
+    doc["status"]    = "online";
+    char buf[128];
+    serializeJson(doc, buf);
+    clienteMQTT.publish(TOPIC_PULSO, buf);
+    Serial.println("Heartbeat enviado");
+}
+
+// ============================================================================
+// FUNCIONES: DISPLAY
+// ============================================================================
+void mostrarDisplay() {
+    if (modoDisp == 0) {
+        lcd.clear();
+        lcd.setCursor(0, 0); lcd.print("PJ:"); lcd.setCursor(3, 0); lcd.print(jugadas);
+        lcd.setCursor(9, 0); lcd.print("PP:"); lcd.setCursor(12, 0); lcd.print(premios);
+        lcd.setCursor(0, 1); lcd.print("PA:"); lcd.setCursor(3, 1); lcd.print(pago);
+        lcd.setCursor(7, 1); lcd.print(tBanco);
+        lcd.setCursor(9, 1); lcd.print("BK:"); lcd.setCursor(12, 1); lcd.print(banco);
+    }
+    if (modoDisp == 1) {
+        lcd.clear();
+        lcd.setCursor(0, 0); lcd.print("Credito");
+        lcd.setCursor(8, 0); lcd.print(creditos);
+    }
+}
+
+// ============================================================================
+// FUNCIONES: MONEDA
+// ============================================================================
+void leerMoneda() {
+    while (digitalRead(PIN_MONEDA) == LOW && debMonSube < 5) {
+        debMonSube++; delay(1);
+        if (digitalRead(PIN_MONEDA) == HIGH) debMonSube = 0;
+    }
+    if (debMonSube == 5 && debMonBaja == LOW) {
+        creditos++; debMonBaja = HIGH; mostrarDisplay();
+    }
+    while (digitalRead(PIN_MONEDA) == HIGH && debMonSube > 0) {
+        debMonSube--; delay(2);
+        if (digitalRead(PIN_MONEDA) == LOW) debMonSube = 5;
+    }
+    if (debMonSube == 0 && debMonBaja == HIGH) debMonBaja = LOW;
+}
+
+// ============================================================================
+// FUNCIONES: BARRERA
+// ============================================================================
+void medirDistancia() {
+    digitalWrite(PIN_TRIGGER, LOW);  delayMicroseconds(2);
+    digitalWrite(PIN_TRIGGER, HIGH); delayMicroseconds(10);
+    tEco   = pulseIn(PIN_ECHO, HIGH);
+    distAct = tEco / 10;
+}
+
+void leerBarrera() {
+    if (tipoBarr == 1) {
+        medirDistancia();
+        if ((distAct + 130) < distRef || (distAct - 130) > distRef) barrActiva = HIGH;
+        if (barrActiva == HIGH) {
+            lcd.setCursor(0, 1); lcd.print("###"); delay(2500); mostrarDisplay();
+            if (digitalRead(PIN_SENS_PREMIO) == HIGH) {
+                premios++;    premiosTot++;   banco -= pago;
+                barrActiva  = LOW;            premioDetect = HIGH;
+                mostrarDisplay();
+                guardarUInt(DIR_PREMIOS,     premios);
+                guardarUInt(DIR_PREMIOS_TOT, premiosTot);
+                guardarInt (DIR_BANCO,       banco);
+            }
+        }
+    } else {
+        if (digitalRead(PIN_BARR_IR) == HIGH) barrActiva = HIGH;
+        if (barrActiva == HIGH) {
+            simBarr = HIGH; lcd.setCursor(0, 1); lcd.print("###"); delay(1000);
+            premios++;    premiosTot++;   banco -= pago;
+            barrActiva  = LOW;            premioDetect = HIGH;
+            mostrarDisplay();
+            guardarUInt(DIR_PREMIOS,     premios);
+            guardarUInt(DIR_PREMIOS_TOT, premiosTot);
+            guardarInt (DIR_BANCO,       banco);
+        }
+    }
+}
+
+void probarBarrera() {
+    if (tipoBarr == 1) {
+        medirDistancia();
+        if ((distAct + 130) < distRef || (distAct - 130) > distRef) barrActiva = HIGH;
+        if (barrActiva == HIGH) { lcd.setCursor(0, 1); lcd.print("###"); delay(1000); }
+    } else {
+        if (digitalRead(PIN_BARR_IR) == HIGH) barrActiva = HIGH;
+        if (barrActiva == HIGH) { simBarr = HIGH; lcd.setCursor(0, 1); lcd.print("###"); delay(1000); }
+    }
+}
+
+// ============================================================================
+// FUNCIÓN: BOTÓN CON DEBOUNCE
+// ============================================================================
+bool leerBoton(int pin, int msDebounce = 50) {
+    if (digitalRead(pin) == LOW) {
+        delay(msDebounce);
+        if (digitalRead(pin) == LOW) {
+            while (digitalRead(pin) == LOW) delay(10);
+            delay(50); return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================================
+// MENÚ: ajusta un valor numérico con botones SUBE/BAJA
+// Retorna el valor final cuando se presiona MENU
+// ============================================================================
+int16_t ajustarValor(const char* titulo, int16_t valor, 
+                     int16_t vMin, int16_t vMax, int16_t paso) {
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("PJ:");
-    lcd.setCursor(3, 0);
-    lcd.print(COIN);
-    lcd.setCursor(9, 0);
-    lcd.print("PP:");
-    lcd.setCursor(12, 0);
-    lcd.print(CONTSALIDA);
-    lcd.setCursor(0, 1);
-    lcd.print("PA:");
-    lcd.setCursor(3, 1);
-    lcd.print(PAGO);
-    lcd.setCursor(7, 1);
-    lcd.print(BANKTIEMPO);
-    lcd.setCursor(9, 1);
-    lcd.print("BK:");
-    lcd.setCursor(12, 1);
-    lcd.print(BANK);
-  }
-  if (GRUADISPLAY == 1) {
+    lcd.setCursor(0, 0); lcd.print(titulo);
+
+    while (digitalRead(PIN_BTN_MENU) == HIGH) {
+        lcd.setCursor(0, 1); lcd.print("      ");
+        lcd.setCursor(0, 1); lcd.print(valor);
+        if (leerBoton(PIN_BTN_SUBE) && valor < vMax) valor += paso;
+        if (leerBoton(PIN_BTN_BAJA) && valor > vMin) valor -= paso;
+        delay(10);
+    }
+    while (digitalRead(PIN_BTN_MENU) == LOW) delay(20);
+    delay(100);
+    return valor;
+}
+
+// ============================================================================
+// MENÚ: elige entre dos opciones con botones SUBE/BAJA
+// opt0 y opt1 son los textos de cada opción
+// Retorna 0 o 1 según la selección
+// ============================================================================
+int16_t elegirOpcion(const char* titulo, int16_t valorActual,
+                     const char* opt0,   const char* opt1) {
+    int16_t sel = valorActual;
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Credito");
-    lcd.setCursor(8, 0);
-    lcd.print(CREDITO);
-  }
+    lcd.setCursor(0, 0); lcd.print(titulo);
+    lcd.setCursor(0, 1); lcd.print(sel == 0 ? opt0 : opt1);
+
+    while (digitalRead(PIN_BTN_MENU) == HIGH) {
+        if (leerBoton(PIN_BTN_SUBE) && sel != 0) {
+            sel = 0;
+            lcd.setCursor(0, 1); lcd.print("          ");
+            lcd.setCursor(0, 1); lcd.print(opt0);
+        }
+        if (leerBoton(PIN_BTN_BAJA) && sel != 1) {
+            sel = 1;
+            lcd.setCursor(0, 1); lcd.print("          ");
+            lcd.setCursor(0, 1); lcd.print(opt1);
+        }
+        delay(10);
+    }
+    while (digitalRead(PIN_BTN_MENU) == LOW) delay(20);
+    delay(100);
+    return sel;
 }
 
-void leecoin() {
-  while (digitalRead(ECOIN) == LOW && AUXCOIN < 5) {
-    AUXCOIN++;
-    delay(1);
-    if (digitalRead(ECOIN) == HIGH) AUXCOIN = 0;
-  }
-  if (AUXCOIN == 5 && AUX2COIN == LOW) {
-    CREDITO++;
-    AUX2COIN = HIGH;
-    graficar();
-  }
-  while (digitalRead(ECOIN) == HIGH && AUXCOIN > 0) {
-    AUXCOIN--;
-    delay(2);
-    if (digitalRead(ECOIN) == LOW) AUXCOIN = 5;
-  }
-  if (AUXCOIN == 0 && AUX2COIN == HIGH) AUX2COIN = LOW;
-}
-
-void leerbarrera() {
-  if (BARRERAAUX2 == 1) {
-    // Leer distancia con sensor ultrasónico
-    digitalWrite(triger, LOW);
-    delayMicroseconds(2);
-    digitalWrite(triger, HIGH);
-    delayMicroseconds(10);
-    tiempo = pulseIn(echo, HIGH);
-    distancia = tiempo / 10;
-
-    // Comparar distancia medida con la referencia
-    if ((distancia + 130) < RDISTANCIA || (distancia - 130) > RDISTANCIA) {
-      BARRERA = HIGH;
-    }
-
-    // Si la barrera se activa
-    if (BARRERA == HIGH) {
-      lcd.setCursor(0, 1);
-      lcd.print("###");
-      delay(2500);
-      graficar();
-
-      if (digitalRead(DATO12) == HIGH) {
-        CONTSALIDA++;
-        PPFIJO++;
-        BANK -= PAGO;
-        BARRERA = LOW;
-        BARRERAAUX = HIGH;
-        graficar();
-        preferences.putInt("contsalida", CONTSALIDA);
-        preferences.putInt("ppfijo", PPFIJO);
-        preferences.putInt("bank", BANK);
-      }
-    }
-  }
-
-  if (BARRERAAUX2 == 0) {
-    // Barrera infrarroja
-    if (digitalRead(DATO7) == HIGH) BARRERA = HIGH;
-
-    if (BARRERA == HIGH) {
-      AUXSIM = HIGH;
-      lcd.setCursor(0, 1);
-      lcd.print("###");
-      delay(1000);
-      CONTSALIDA++;
-      PPFIJO++;
-      BANK -= PAGO;
-      BARRERA = LOW;
-      BARRERAAUX = HIGH;
-      graficar();
-      preferences.putInt("contsalida", CONTSALIDA);
-      preferences.putInt("ppfijo", PPFIJO);
-      preferences.putInt("bank", BANK);
-    }
-  }
-}
-
-void ajustebarrera() {
-  // Similar a leerbarrera pero usado para ajuste
-  if (BARRERAAUX2 == 1) {
-    digitalWrite(triger, LOW);
-    delayMicroseconds(2);
-    digitalWrite(triger, HIGH);
-    delayMicroseconds(10);
-    tiempo = pulseIn(echo, HIGH);
-    distancia = tiempo / 10;
-
-    if ((distancia + 130) < RDISTANCIA || (distancia - 130) > RDISTANCIA) {
-      BARRERA = HIGH;
-    }
-
-    if (BARRERA == HIGH) {
-      lcd.setCursor(0, 1);
-      lcd.print("###");
-      delay(1000);
-    }
-  }
-
-  if (BARRERAAUX2 == 0) {
-    if (digitalRead(DATO7) == HIGH) BARRERA = HIGH;
-
-    if (BARRERA == HIGH) {
-      AUXSIM = HIGH;
-      lcd.setCursor(0, 1);
-      lcd.print("###");
-      delay(1000);
-    }
-  }
-}
-
+// ============================================================================
+// MENÚ: función principal de programación
+// ============================================================================
 void programar() {
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("VERSION 1.7");
-  lcd.setCursor(0, 1);
-  lcd.print("24/5/24");
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) { delay(20); }
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("PJ:");
-  lcd.setCursor(4, 0);
-  lcd.print(PJFIJO);
-  lcd.setCursor(0, 1);
-  lcd.print("PP:");
-  lcd.setCursor(4, 1);
-  lcd.print(PPFIJO);
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) { delay(20); }
-  GRUADISPLAY = 0;
-
-  graficar();
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) { delay(20); }
-  preferences.getInt("gruadisplay", GRUADISPLAY);
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("BORRA CONTADORES");
-  lcd.setCursor(0, 1);
-  lcd.print("NO");
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    if (digitalRead(DATO6) == LOW) {
-      BORRARCONTADORES = HIGH;
-      lcd.setCursor(0, 1);
-      lcd.print("SI");
-      delay(500);
-    }
-    if (digitalRead(DATO10) == LOW) {
-      BORRARCONTADORES = LOW;
-      lcd.setCursor(0, 1);
-      lcd.print("NO");
-      delay(500);
-    }
-  }
-  if (BORRARCONTADORES == HIGH) {
-    preferences.putInt("coin", 0);
-    preferences.putInt("contsalida", 0);
-    preferences.putInt("bank", 0);
-
-    COIN = preferences.getInt("coin", 0);
-    CONTSALIDA = preferences.getInt("contsalida", 0);
-    BANK = preferences.getInt("bank", 0);
-
-    BORRARCONTADORES = LOW;
+    // --- Pantalla de versión ---
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("BORRADOS");
-    delay(1000);
-  }
-
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Display Modo");
-  if (GRUADISPLAY == 0) {
-    lcd.setCursor(0, 1);
-    lcd.print("Modo Contadores");
-  }
-  if (GRUADISPLAY == 1) {
-    lcd.setCursor(0, 1);
-    lcd.print("Modo Coin");
-  }
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    if (digitalRead(DATO6) == LOW) {
-      GRUADISPLAY = 0;
-      lcd.setCursor(0, 1);
-      lcd.print("Modo Contadores");
-    }
-    if (digitalRead(DATO10) == LOW) {
-      GRUADISPLAY = 1;
-      lcd.setCursor(0, 1);
-      lcd.print("Modo Coin");
-    }
-  }
-  preferences.putInt("gruadisplay", GRUADISPLAY);
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("AJUSTAR PAGO");
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    lcd.setCursor(0, 1);
-    lcd.print(PAGO);
+    lcd.setCursor(0, 0); lcd.print("VERSION 1.7");
+    lcd.setCursor(0, 1); lcd.print("24/5/24");
+    delay(500);
+    while (digitalRead(PIN_BTN_MENU) == LOW)  delay(20);
     delay(100);
-    if (digitalRead(DATO6) == LOW) {
-      PAGO++;
-      lcd.setCursor(0, 1);
-      lcd.print(PAGO);
-      delay(400);
-    }
-    if (digitalRead(DATO10) == LOW) {
-      PAGO--;
-      lcd.setCursor(0, 1);
-      lcd.print(PAGO);
-      delay(400);
-    }
-  }
-  preferences.putInt("pago", PAGO);
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("AJUSTAR TIEMPO");
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    lcd.setCursor(0, 1);
-    lcd.print(TIEMPO);
+    while (digitalRead(PIN_BTN_MENU) == HIGH) delay(20);
+    while (digitalRead(PIN_BTN_MENU) == LOW)  delay(20);
     delay(100);
-    if (digitalRead(DATO6) == LOW && TIEMPO < 5000) {
-      TIEMPO = (TIEMPO + 10);
-      lcd.setCursor(0, 1);
-      lcd.print(TIEMPO);
-    }
-    if (digitalRead(DATO10) == LOW && TIEMPO > 500) {
-      TIEMPO = (TIEMPO - 10);
-      lcd.setCursor(0, 1);
-      lcd.print(TIEMPO);
-    }
-  }
-  preferences.putInt("tiempo", TIEMPO);
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("TIEMPO F. FUERTE");
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    lcd.setCursor(0, 1);
-    lcd.print(TIEMPO5);
+    // --- Totales acumulados (solo lectura) ---
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd.print("PJ:"); lcd.setCursor(4, 0); lcd.print(jugadasTot);
+    lcd.setCursor(0, 1); lcd.print("PP:"); lcd.setCursor(4, 1); lcd.print(premiosTot);
+    while (digitalRead(PIN_BTN_MENU) == HIGH) delay(20);
+    while (digitalRead(PIN_BTN_MENU) == LOW)  delay(20);
     delay(100);
-    if (digitalRead(DATO6) == LOW && TIEMPO5 < 5000) {
-      TIEMPO5 = (TIEMPO5 + 10);
-      lcd.setCursor(0, 1);
-      lcd.print(TIEMPO5);
-    }
-    if (digitalRead(DATO10) == LOW && TIEMPO5 > 0) {
-      TIEMPO5 = (TIEMPO5 - 10);
-      lcd.setCursor(0, 1);
-      lcd.print(TIEMPO5);
-    }
-  }
-  preferences.putInt("tiempo5", TIEMPO5);
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("AJUSTAR FUERZA");
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    lcd.setCursor(0, 1);
-    lcd.print(FUERZA);
+    // --- Borrar contadores ---
+    borrarCont = elegirOpcion("BORRA CONTADORES", LOW, "NO", "SI");
+    if (borrarCont == HIGH) {
+        guardarUInt(DIR_JUGADAS, 0); guardarUInt(DIR_PREMIOS, 0);
+        guardarInt(DIR_BANCO, 0);
+        jugadas = 0; premios = 0; banco = 0; borrarCont = LOW;
+        lcd.clear(); lcd.setCursor(0, 0); lcd.print("BORRADOS"); delay(1000);
+    }
+
+    // --- Parámetros numéricos ---
+    modoDisp = elegirOpcion("Display Modo",   modoDisp,  "Modo Contadores", "Modo Coin");
+    pago     = ajustarValor("AJUSTAR PAGO",   pago,      1,    99,   1);
+    tAgarre  = ajustarValor("AJUSTAR TIEMPO", tAgarre,   500,  5000, 10);
+    tFuerte  = ajustarValor("T. FUERTE",      tFuerte,   0,    5000, 10);
+    fuerza   = ajustarValor("AJUSTAR FUERZA", fuerza,    5,    101,  1);
+    tipoBarr = elegirOpcion("TIPO BARRERA",   tipoBarr,  "INFRARROJO", "ULTRASONIDO");
+
+    // --- Prueba barrera ---
+    lcd.clear(); lcd.setCursor(0, 0); lcd.print("PRUEBA BARRERA");
+    while (digitalRead(PIN_BTN_MENU) == HIGH) {
+        lcd.setCursor(0, 1); lcd.print("        ");
+        lcd.setCursor(0, 1); lcd.print(distAct);
+        lcd.setCursor(8, 1); lcd.print(distRef);
+        probarBarrera();
+        if (barrActiva == HIGH) {
+            lcd.setCursor(0, 1); lcd.print("###");
+            delay(1000); barrActiva = LOW;
+        }
+        delay(50);
+    }
+    while (digitalRead(PIN_BTN_MENU) == LOW) delay(20);
     delay(100);
-    if (digitalRead(DATO6) == LOW && FUERZA < 101) {
-      FUERZA++;
-      lcd.setCursor(0, 1);
-      lcd.print(FUERZA);
-    }
-    if (digitalRead(DATO10) == LOW && FUERZA > 5) {
-      FUERZA--;
-      lcd.setCursor(0, 1);
-      lcd.print(FUERZA);
-    }
-  }
-  preferences.putInt("fuerza", FUERZA);
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("TIPO BARRERA");
-  if (BARRERAAUX2 == 0) {
-    lcd.setCursor(0, 1);
-    lcd.print("INFRARROJO");
-  }
-  if (BARRERAAUX2 == 1) {
-    lcd.setCursor(0, 1);
-    lcd.print("ULTRASONIDO");
-  }
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    if (digitalRead(DATO6) == LOW) {
-      BARRERAAUX2 = 0;
-      lcd.setCursor(0, 1);
-      lcd.print("INFRARROJO");
-    }
-    if (digitalRead(DATO10) == LOW) {
-      BARRERAAUX2 = 1;
-      lcd.setCursor(0, 1);
-      lcd.print("ULTRASONIDO");
-    }
-  }
-  preferences.putInt("barreraaux2", BARRERAAUX2);
+    // --- Guardar todo en EEPROM ---
+    guardarInt(DIR_MODO_DISP,    modoDisp);
+    guardarInt(DIR_PAGO,         pago);
+    guardarInt(DIR_T_AGARRE,     tAgarre);
+    guardarInt(DIR_T_FUERTE,     tFuerte);
+    guardarInt(DIR_FUERZA,       fuerza);
+    guardarInt(DIR_TIPO_BARRERA, tipoBarr);
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("PRUEBA BARRERA");
-  delay(500);
-  while (digitalRead(DATO3) == HIGH) {
-    lcd.setCursor(0, 1);
-    lcd.print(distancia);
-    lcd.setCursor(8, 1);
-    lcd.print(RDISTANCIA);
-    ajustebarrera();
-    if (BARRERA == HIGH) {
-      lcd.setCursor(0, 1);
-      lcd.print("###");
-      delay(1000);
-      BARRERA = LOW;
-    }
-  }
-
-  graficar();
-  delay(500);
+    mostrarDisplay();
 }
 
-void loop() {
+void moverPinza(bool conPremio) {
 
-  unsigned int dato1, dato2, dato3;
-  int dato4, auxtbarrera = 0;
+    if (conPremio) {
+        analogWrite(PIN_MOTOR, 250);
+        delay(2000);
 
-  // Espera a que la señal de la pinza se ponga en HIGH
-  while (digitalRead(EPINZA) == LOW && AUX < 5) {
-    CTIEMPO++;
-    if (digitalRead(EPINZA) == HIGH) {
-      AUX++;
-    }
-    if (digitalRead(EPINZA) == LOW) {
-      AUX = 0;
-    }
-
-    if (TIEMPO7 < 100000) {
-      TIEMPO7++;
-    }
-
-    // Leer monedas
-    leecoin();
-
-    // Control de la rutina de programación
-    if (digitalRead(DATO3) == LOW) {
-      AUXDATO3++;
     } else {
-      AUXDATO3 = 0;
+        analogWrite(PIN_MOTOR, 255); delay(tFuerte);
+
+        fuerzaAdj = (banco <= -10) ? fuerza * 0.8 : fuerza;
+        fuerzaVar = random(fuerzaAdj * 1.8, fuerzaAdj * 2.5);
+        fuerzaDec = (fuerzaVar - fuerzaAdj) / 10;
+        delayPaso = tAgarre / 10;
+
+        for (pasoFuerza = 0; pasoFuerza <= 10; pasoFuerza++) {
+            fuerzaVar -= fuerzaDec;
+            analogWrite(PIN_MOTOR, fuerzaVar);
+            delay(delayPaso);
+        }
+
+        analogWrite(PIN_MOTOR, fuerza * 1.3); delay(300);
+        analogWrite(PIN_MOTOR, fuerza);       delay(100);
+        analogWrite(PIN_MOTOR, fuerza * 1.3);
     }
 
-    if (digitalRead(DATO3) == LOW && AUXDATO3 == 30) {
-      programar();
-      AUXDATO3 = 0;
+    // Bucle de espera común
+    bool esperando = true;
+    while (esperando) {
+        while (cntPinza < 3000) {
+            clienteMQTT.loop();
+            if (digitalRead(PIN_MOTOR) == HIGH) cntPinza = 0;
+            if (cntPinza == 150)               analogWrite(PIN_MOTOR, 0);
+            if (digitalRead(PIN_MOTOR) == LOW)  { cntPinza++; delay(1); }
+            if (tBarrCheck <= 20) tBarrCheck++;
+            if (tBarrCheck >= 19) {
+                tBarrCheck = 0;
+                if (premioDetect == LOW) leerBarrera();
+            }
+            if (cntPinza == 2998)     esperando = false;
+            if (premioDetect == HIGH) { esperando = false; break; }
+        }
+    }
+}
+
+// ============================================================================
+// SETUP
+// ============================================================================
+void setup() {
+    Serial.begin(115200);
+
+    if (USAR_EEPROM_EXTERNA) {
+        Wire.begin();
+        Serial.println("MODO: EEPROM EXTERNA (I2C)");
+    } else {
+        EEPROM.begin(EEPROM_TAM);
+        Wire.begin();
+        Serial.println("MODO: EEPROM INTERNA (FLASH)");
     }
 
-    // Control del tiempo de juego
-    if (CTIEMPO >= 18000 && BANKTIEMPO > 0) {
-      CTIEMPO = 0;
-      BANKTIEMPO--;
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+
+    analogWriteFrequency(PIN_MOTOR, 100);
+    lcd.init(); lcd.backlight();
+
+    pinMode(PIN_TRIGGER,     OUTPUT);
+    pinMode(PIN_ECHO,        INPUT);
+    pinMode(PIN_BARR_IR,     INPUT_PULLUP);
+    pinMode(PIN_CREDITO,     OUTPUT);
+    pinMode(PIN_BTN_MENU,    INPUT_PULLUP);
+    pinMode(PIN_SENS_POS,    OUTPUT);
+    pinMode(PIN_MOTOR,       INPUT_PULLUP);
+    pinMode(PIN_LUZ,         OUTPUT);
+    pinMode(PIN_BTN_SUBE,    INPUT_PULLUP);
+    pinMode(PIN_BTN_BAJA,    INPUT_PULLUP);
+    pinMode(PIN_SENS_PREMIO, INPUT_PULLUP);
+    pinMode(PIN_MONEDA,      INPUT_PULLUP);
+
+    // Inicializar EEPROM si es la primera vez
+    inicio = leerInt(DIR_INICIO_CHECK);
+    if (inicio != VAL_INICIO_CHECK) {
+        Serial.println("Inicializando memoria...");
+        guardarUInt(DIR_JUGADAS,     0); guardarUInt(DIR_PREMIOS,     0);
+        guardarInt (DIR_BANCO,       0); guardarInt (DIR_PAGO,        12);
+        guardarInt (DIR_T_AGARRE, 2000); guardarInt (DIR_FUERZA,      50);
+        guardarUInt(DIR_JUGADAS_TOT, 0); guardarUInt(DIR_PREMIOS_TOT,  0);
+        guardarInt (DIR_TIPO_BARRERA,0); guardarInt (DIR_MODO_DISP,    0);
+        guardarInt (DIR_T_FUERTE,    0); guardarInt (DIR_INICIO_CHECK, VAL_INICIO_CHECK);
     }
 
-    // Leer la barrera periódicamente
-    if (TIEMPO8 < 200) {
-      TIEMPO8++;
-      if (TIEMPO8 == 199) {
-        TIEMPO8 = 0;
-        if (BARRERAAUX == LOW) {
-          leerbarrera();
-        }
-      }
+    jugadas    = leerUInt(DIR_JUGADAS);
+    premios    = leerUInt(DIR_PREMIOS);
+    banco      = leerInt (DIR_BANCO);
+    pago       = leerInt (DIR_PAGO);
+    tAgarre    = leerInt (DIR_T_AGARRE);
+    fuerza     = leerInt (DIR_FUERZA);
+    jugadasTot = leerUInt(DIR_JUGADAS_TOT);
+    premiosTot = leerUInt(DIR_PREMIOS_TOT);
+    tipoBarr   = leerInt (DIR_TIPO_BARRERA);
+    modoDisp   = leerInt (DIR_MODO_DISP);
+    tFuerte    = leerInt (DIR_T_FUERTE);
+
+    if (digitalRead(PIN_BTN_MENU) == LOW) {
+        lcd.clear(); lcd.setCursor(0, 0); lcd.print("CONT.FIJOS");
+        lcd.setCursor(0, 1); lcd.print("PJ:"); lcd.print(jugadasTot);
+        lcd.print(" PP:"); lcd.print(premiosTot); delay(1000);
+        while (digitalRead(PIN_BTN_MENU) == HIGH) delay(20);
     }
-  }
+    delay(1000);
 
-  // Restablecer variables
-  BARRERAAUX = LOW;
-  AUX = 0;
-  BARRERA = LOW;
-
-  // Descontar créditos si existen
-  if (CREDITO >= 1) {
-    CREDITO--;
-  }
-
-  graficar();  // Actualizar LCD con nuevos valores
-
-  if (BANKTIEMPO < 10) {
-    BANKTIEMPO++;
-  }
-
-  Z = random(5);  // Valor aleatorio para el control de la pinza
-
-  // Si el crédito es suficiente y el valor aleatorio cumple la condición
-  if (PAGO <= BANK && Z <= 3) {
-    // Cerrar la pinza usando PWM
-    analogWrite(SPINZA, 250);  // Establecer el duty cycle (250 de 255 para cerrar la pinza)
-    delay(2000);               // Esperar 2 segundos
-    auxtbarrera = HIGH;
-    // Control de las aperturas temporales en la señal de la pinza mientras la pinza vuelve a home
-      // Incremento periódico de COIN, BANK, PJFIJO
-    COIN++;
-    BANK++;
-    PJFIJO++;
-    while (auxtbarrera == HIGH) {
-      while (X < 3000) {  // comienza retardo de lectura de barrera
-        if (digitalRead(EPINZA) == HIGH) {
-          X = 0;
-        }
-        if (X == 150) {
-          analogWrite(SPINZA, 0);  // Apagar la pinza (duty cycle = 0)
-        }
-        if (digitalRead(EPINZA) == LOW) {
-          X++;
-          delay(1);  // Incrementa X mientras dure el while
-        }
-
-        // Leer la barrera periódicamente (si existe)
-        if (TIEMPO8 <= 20) {
-          TIEMPO8++;
-        }
-        if (TIEMPO8 >= 19) {
-          TIEMPO8 = 0;
-          if (BARRERAAUX == LOW) {
-            leerbarrera();  // Lógica para la barrera
-          }
-        }
-        if (X == 2998) {
-          auxtbarrera = LOW;  //lcd.clear();delay(2000);
-        }
-        // Si la barrera está activa, salir del loop
-        if (BARRERAAUX == HIGH) {
-          auxtbarrera = LOW;
-          break;
-        }
-      }  //esta llave es el while del retardo de lectura barrera
-    }
-  } else {
-    // Bloque de cierre de la pinza cuando no hay pago
-    analogWrite(SPINZA, 255);  // Cerrar la pinza completamente (duty cycle máximo)
-    delay(TIEMPO5);            // Esperar según TIEMPO5
-      // Incremento periódico de COIN, BANK, PJFIJO
-    COIN++;
-    BANK++;
-    PJFIJO++;
-    // Ajustar la fuerza de la pinza dependiendo del banco
-    FUERZAAUX2 = FUERZA;
-    if (BANK <= -10) {
-      FUERZAAUX2 = FUERZA * 0.8;  // Reducir la fuerza un 20% si el banco es negativo
+    // Calibrar distancia de referencia con N muestras
+    for (int i = 0; i <= 10; i++) {
+        medirDistancia();
+        distRef = distAct;
+        delay(50);
     }
 
-    // Ajuste del valor aleatorio de fuerza
-    FUERZAV = random(FUERZAAUX2 * 1.8, FUERZAAUX2 * 2.5);
-    FUERZAAUX = (FUERZAV - FUERZAAUX2) / 10;
+    digitalWrite(PIN_LUZ, 1);
 
-    TIEMPOAUX = 0;
-    TIEMPOAUX1 = (TIEMPO / 10);
+    conectarWifi();
+    clienteMQTT.setServer(MQTT_SERVER, MQTT_PUERTO);
+    tickerPulso.attach(60, activarPulso);
+}
 
-    // Aflojar progresivamente la fuerza de la pinza
-    while (TIEMPOAUX <= 10) {
-      FUERZAV -= FUERZAAUX;
-      analogWrite(SPINZA, FUERZAV);  // Ajustar el duty cycle de la pinza
-      TIEMPOAUX++;
-      delay(TIEMPOAUX1);  // Ajustar el delay progresivo
+// ============================================================================
+// LOOP PRINCIPAL
+// ============================================================================
+void loop() {
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!clienteMQTT.connected()) reconectarMQTT();
+        clienteMQTT.loop();
     }
 
-    // Ajuste final de la pinza
-    analogWrite(SPINZA, FUERZA * 1.3);  // Aumentar la fuerza temporalmente
-    delay(300);
-    analogWrite(SPINZA, FUERZA);  // Volver a la fuerza normal
-    delay(100);
-    analogWrite(SPINZA, FUERZA * 1.3);  // Aumentar la fuerza nuevamente
+    if (flagPulso) { enviarHeartbeat(); flagPulso = false; }
 
-    auxtbarrera = HIGH;
+    mostrarDisplay();
 
+    // -------------------------------------------------------------------------
+    // BUCLE DE ESPERA (máquina idle, esperando que el jugador pulse)
+    // -------------------------------------------------------------------------
+    while (digitalRead(PIN_MOTOR) == LOW && debPinza < 5) {
+        clienteMQTT.loop();
+        if (flagPulso) { enviarHeartbeat(); flagPulso = false; }
 
-    // Control de las aperturas temporales en la señal de la pinza mientras la pinza vuelve a home
+        cntEspera++;
+        if (digitalRead(PIN_MOTOR) == HIGH) debPinza++;
+        if (digitalRead(PIN_MOTOR) == LOW)  debPinza = 0;
+        if (cntEspera < 100000) cntEspera++;
 
-    while (auxtbarrera == HIGH) {
-      while (X < 3000) {  // comienza retardo de lectura de barrera
-        if (digitalRead(EPINZA) == HIGH) {
-          X = 0;
-        }
-        if (X == 150) {
-          analogWrite(SPINZA, 0);  // Apagar la pinza (duty cycle = 0)
-        }
-        if (digitalRead(EPINZA) == LOW) {
-          X++;
-          delay(1);  // Incrementa X mientras dure el while
+        leerMoneda();
+
+        if (jugadasTot != prevJugadasTot || premiosTot != prevPremiosTot || banco != prevBanco) {
+            enviarDatos();
+            prevJugadasTot = jugadasTot;
+            prevPremiosTot = premiosTot;
+            prevBanco      = banco;
         }
 
-        // Leer la barrera periódicamente (si existe)
-        if (TIEMPO8 <= 20) {
-          TIEMPO8++;
+        if (digitalRead(PIN_BTN_MENU) == LOW) cntMenuBtn++;
+        else cntMenuBtn = 0;
+        if (digitalRead(PIN_BTN_MENU) == LOW && cntMenuBtn == 30) {
+            tickerPulso.detach();
+            programar();
+            tickerPulso.attach(60, activarPulso);
+            cntMenuBtn = 0;
         }
-        if (TIEMPO8 >= 19) {
-          TIEMPO8 = 0;
-          if (BARRERAAUX == LOW) {
-            leerbarrera();  // Lógica para la barrera
-          }
+
+        if (cntBanco >= 18000 && tBanco > 0) { cntBanco = 0; tBanco--; }
+
+        if (tBarrCheck < 200) {
+            tBarrCheck++;
+            if (tBarrCheck == 199) {
+                tBarrCheck = 0;
+                if (premioDetect == LOW) leerBarrera();
+            }
         }
-        if (X == 2998) {
-          auxtbarrera = LOW;  //lcd.clear();delay (2000);
+
+        if (WiFi.status() == WL_CONNECTED) {
+            if (!clienteMQTT.connected()) reconectarMQTT();
+            clienteMQTT.loop();
         }
-        // Si la barrera está activa, salir del loop
-        if (BARRERAAUX == HIGH) {
-          auxtbarrera = LOW;
-          break;
-        }
-      }  //esta llave es el while del retardo de lectura barrera
     }
-  }  // esta llave cierra el bloque de no pago
 
-  // Apagar la pinza después de terminar
-  analogWrite(SPINZA, 0);  // Apagar la pinza (duty cycle 0)
+    // -------------------------------------------------------------------------
+    // SECUENCIA DE JUEGO
+    // -------------------------------------------------------------------------
+    premioDetect = LOW; debPinza = 0; barrActiva = LOW;
+    if (creditos >= 1) creditos--;
+    mostrarDisplay();
 
-  graficar();  // Actualiza el LCD
-  if (PJFIJO != prevPJFIJO || PPFIJO != prevPPFIJO || BANK != prevBANK) {
-    dato1 = PAGO;
-    dato2 = PJFIJO;
-    dato3 = PPFIJO;
-    dato4 = BANK;
-    sendDataToPHP(device_id, dato1, dato2, dato3, dato4);
-    prevPAGO = PAGO;
-    prevPJFIJO = PJFIJO;
-    prevPPFIJO = PPFIJO;
-    prevBANK = BANK;
+    jugadas++; banco++; jugadasTot++;
+    if (tBanco < 10) tBanco++;
 
-    preferences.putInt("bank", BANK);
-    preferences.putInt("pjfijo", PJFIJO);
-    preferences.putInt("coin", COIN);
-  }
+    guardarInt (DIR_BANCO,       banco);
+    guardarUInt(DIR_JUGADAS_TOT, jugadasTot);
+    guardarUInt(DIR_JUGADAS,     jugadas);
 
-  TIEMPO8 = 0;
-  X = 0;
-  A = 0;
+    bool hayPremio = (pago <= banco && random(5) <= 3);
+    moverPinza(hayPremio);
+
+    analogWrite(PIN_MOTOR, 0);
+    tBarrCheck = 0; cntPinza = 0; debPinza = 0;
 }
