@@ -6,8 +6,6 @@
 // ==========================================
 // 🎚️ CONFIGURACIÓN DE MEMORIA (TOCA ACA)
 // ==========================================
-// 0 = Memoria Interna (Para pruebas sin chip)
-// 1 = Memoria Externa (Para producción con AT24C32)
 #define USAR_EEPROM_EXTERNA 0
 
 #include <Wire.h>
@@ -49,8 +47,8 @@
 #define PIN_ECHO         12   // Echo ultrasonido
 #define PIN_LUZ          19   // Salida de luz
 #define PIN_BARR_IR      14   // Sensor barrera infrarrojo
-#define PIN_MOTOR        17   // Motor pinza (PWM)
-#define PIN_SENS_POS     16   // Sensor posición pinza
+#define PIN_MOTOR        16   // Motor pinza PWM        (antes: SPINZA)
+#define PIN_SENS_PINZA   17   // Sensor activación pinza (antes: EPINZA)
 #define PIN_BTN_BAJA     35   // Botón bajar valor en menú
 #define PIN_SENS_PREMIO  27   // Sensor detección de premio
 #define PIN_BTN_SUBE     34   // Botón subir valor en menú
@@ -61,13 +59,16 @@
 // ============================================================================
 // WIFI Y MQTT
 // ============================================================================
-const char* ID_DISP     = "ESP32_005";
+const char* ID_DISP     = "Grua_123";
 const char* WIFI_SSID   = "FIBRA-WIFI6-229F";
 const char* WIFI_CLAVE  = "46332714";
 const char* MQTT_SERVER = "broker.emqx.io";
 const int   MQTT_PUERTO = 1883;
-const char* TOPIC_DATOS = "maquinas/ESP32_005/datos";
-const char* TOPIC_PULSO = "maquinas/ESP32_005/heartbeat";
+const char* TOPIC_DATOS = "maquinas/Grua_123/datos";
+const char* TOPIC_PULSO = "maquinas/Grua_123/heartbeat";
+
+// DNI del admin (debe existir en usuarios_admin). Por defecto: 00000000
+const char* DNI_ADMIN   = "00000000";
 
 // ============================================================================
 // OBJETOS
@@ -80,73 +81,73 @@ Ticker       tickerPulso;
 // ============================================================================
 // VARIABLES: CONTADORES Y BALANCE
 // ============================================================================
-unsigned int jugadas     = 0;   // Jugadas en sesión            (antes: COIN)
-unsigned int premios     = 0;   // Premios entregados sesión    (antes: CONTSALIDA)
-int16_t      banco       = 0;   // Balance crédito/débito       (antes: BANK)
-unsigned int tBanco      = 0;   // Tiempo de vida del banco     (antes: BANKTIEMPO)
-unsigned int jugadasTot  = 0;   // Jugadas totales acumuladas   (antes: PJFIJO)
-unsigned int premiosTot  = 0;   // Premios totales acumulados   (antes: PPFIJO)
+unsigned int jugadas     = 0;
+unsigned int premios     = 0;
+int16_t      banco       = 0;
+unsigned int tBanco      = 0;
+unsigned int jugadasTot  = 0;
+unsigned int premiosTot  = 0;
 
 // ============================================================================
 // VARIABLES: CONFIGURACIÓN DE JUEGO
 // ============================================================================
-int16_t pago        = 20;   // Créditos para dar premio     (antes: PAGO)
-int16_t tAgarre     = 0;    // Tiempo de agarre pinza (ms)  (antes: TIEMPO)
-int16_t fuerza      = 50;   // Fuerza base pinza 0-100      (antes: FUERZA)
-int16_t tFuerte     = 0;    // Tiempo fuerza fuerte (ms)    (antes: TIEMPO5)
-int16_t modoDisp    = 0;    // 0=Contadores 1=Crédito       (antes: GRUADISPLAY)
-int16_t tipoBarr    = 0;    // 0=Infrarrojo 1=Ultrasonido   (antes: BARRERAAUX2)
+int16_t pago        = 20;
+int16_t tAgarre     = 0;
+int16_t fuerza      = 50;
+int16_t tFuerte     = 0;
+int16_t modoDisp    = 0;
+int16_t tipoBarr    = 0;
 
 // ============================================================================
 // VARIABLES: SENSOR DE DISTANCIA
 // ============================================================================
-int distRef  = 0;   // Distancia calibrada en reposo    (antes: RDISTANCIA)
-int distAct  = 0;   // Distancia medida en tiempo real  (antes: distancia)
-int tEco     = 0;   // Tiempo de pulso eco en µs        (antes: tiempo)
+int distRef  = 0;
+int distAct  = 0;
+int tEco     = 0;
 
 // ============================================================================
 // VARIABLES: BARRERA Y PREMIO
 // ============================================================================
-int barrActiva   = 0;   // Barrera detectó objeto           (antes: BARRERA)
-int premioDetect = 0;   // Premio confirmado en jugada       (antes: BARRERAAUX)
+int barrActiva   = 0;
+int premioDetect = 0;
 
 // ============================================================================
 // VARIABLES: MONEDA Y CRÉDITO
 // ============================================================================
-int creditos   = 0;   // Créditos disponibles             (antes: CREDITO)
-int debMonSube = 0;   // Debounce subida moneda           (antes: AUXCOIN)
-int debMonBaja = 0;   // Debounce bajada moneda           (antes: AUX2COIN)
+int creditos   = 0;
+int debMonSube = 0;
+int debMonBaja = 0;
 
 // ============================================================================
 // VARIABLES: PINZA Y FUERZA
 // ============================================================================
-float fuerzaVar = 0;   // Fuerza actual interpolada        (antes: FUERZAV)
-float fuerzaDec = 0;   // Decremento de fuerza             (antes: FUERZAAUX)
-int   fuerzaAdj = 0;   // Fuerza ajustada según banco      (antes: FUERZAAUX2)
+float fuerzaVar = 0;
+float fuerzaDec = 0;
+int   fuerzaAdj = 0;
 
 // ============================================================================
 // VARIABLES: TEMPORIZACIÓN Y BUCLES
 // ============================================================================
-unsigned long cntPinza   = 0;   // Contador bucle espera pinza     (antes: X)
-int           debPinza   = 0;   // Debounce sensor pinza           (antes: AUX / A)
-int           pasoFuerza = 0;   // Índice paso de interpolación    (antes: TIEMPOAUX)
-int           delayPaso  = 0;   // Delay entre pasos de fuerza     (antes: TIEMPOAUX1)
-int           cntEspera  = 0;   // Contador ciclos idle            (antes: TIEMPO7)
-unsigned long tBarrCheck = 0;   // Timer chequeo barrera           (antes: TIEMPO8)
-int           cntBanco   = 0;   // Contador decremento banco       (antes: CTIEMPO)
-int16_t       inicio     = 0;   // Valor check inicialización      (antes: INICIO)
-int           cntMenuBtn = 0;   // Contador retención botón menú   (antes: AUXDATO3)
-int           simBarr    = 0;   // Flag simulación barrera IR      (antes: AUXSIM)
-int           borrarCont = LOW; // Flag borrar contadores          (antes: BORRARCONTADORES)
+unsigned long cntPinza   = 0;
+int           debPinza   = 0;
+int           pasoFuerza = 0;
+int           delayPaso  = 0;
+int           cntEspera  = 0;
+unsigned long tBarrCheck = 0;
+int           cntBanco   = 0;
+int16_t       inicio     = 0;
+int           cntMenuBtn = 0;
+int           simBarr    = 0;
+int           borrarCont = LOW;
 
 // ============================================================================
 // VARIABLES: MQTT Y WIFI
 // ============================================================================
 volatile bool flagPulso    = false;
 unsigned long tUltReconMQTT= 0;
-int prevJugadasTot         = 0;   // (antes: prevPJFIJO)
-int prevPremiosTot         = 0;   // (antes: prevPPFIJO)
-int prevBanco              = 0;   // (antes: prevBANK)
+int prevJugadasTot         = 0;
+int prevPremiosTot         = 0;
+int prevBanco              = 0;
 
 // ============================================================================
 // FUNCIONES: EEPROM EXTERNA (I2C)
@@ -248,38 +249,56 @@ void reconectarMQTT() {
     if (millis() - tUltReconMQTT < 5000) return;
     tUltReconMQTT = millis();
     Serial.print("Reconectando MQTT...");
-    if (clienteMQTT.connect(ID_DISP, "maquinas/status", 1, true, "offline")) {
-        Serial.println("OK");
-        clienteMQTT.publish("maquinas/status", "online");
-    } else {
+  // En reconectarMQTT():
+  if (clienteMQTT.connect(ID_DISP, "maquinas/status", 1, true, "0")) {  // Last Will = "0" (offline)
+    Serial.println("OK");
+    clienteMQTT.publish("maquinas/status", "1");  // "1" = online
+  } else {
         Serial.print("Error rc="); Serial.println(clienteMQTT.state());
     }
 }
 
+/**
+ * Envía telemetría en formato API del sitio (api_receptor.php).
+ * El mqtt_listener reenvía el JSON tal cual.
+ */
 void enviarDatos() {
     if (!clienteMQTT.connected()) return;
     JsonDocument doc;
-    doc["device_id"] = ID_DISP;
-    doc["dato1"]     = pago;
-    doc["dato2"]     = jugadasTot;
-    doc["dato3"]     = premiosTot;
-    doc["dato4"]     = banco;
-    char buf[256];
-    serializeJson(doc, buf);
-    if (clienteMQTT.publish(TOPIC_DATOS, buf)) Serial.println("Datos enviados MQTT");
+    doc["action"]          = 2;
+    doc["dni_admin"]       = DNI_ADMIN;
+    doc["codigo_hardware"] = ID_DISP;
+    doc["tipo_maquina"]    = 2;   // 2 = Grúa
+    doc["payload"]["pago"]   = pago;
+    doc["payload"]["coin"]   = jugadasTot;
+    doc["payload"]["premios"]= premiosTot;
+    doc["payload"]["banco"] = banco;
+    // En enviarDatos y enviarHeartbeat - asegurar que el buffer no se reutilice
+    char buf[320];
+    size_t len = serializeJson(doc, buf);
+    bool ok = clienteMQTT.publish(TOPIC_DATOS, buf, len);
+    // No usar buf hasta que publish termine
+    if (clienteMQTT.publish(TOPIC_DATOS, buf, len)) Serial.println("Datos enviados MQTT");
 }
 
 void activarPulso() { flagPulso = true; }
 
+/**
+ * Envía heartbeat en formato API del sitio (api_receptor.php).
+ */
 void enviarHeartbeat() {
     if (!clienteMQTT.connected()) return;
     JsonDocument doc;
-    doc["device_id"] = ID_DISP;
-    doc["status"]    = "online";
-    char buf[128];
-    serializeJson(doc, buf);
-    clienteMQTT.publish(TOPIC_PULSO, buf);
-    Serial.println("Heartbeat enviado");
+    doc["action"]          = 1;
+    doc["dni_admin"]       = DNI_ADMIN;
+    doc["codigo_hardware"] = ID_DISP;
+    doc["tipo_maquina"]    = 2;   // 2 = Grúa
+    // En enviarDatos y enviarHeartbeat - asegurar que el buffer no se reutilice
+    char buf[320];
+    size_t len = serializeJson(doc, buf);
+    bool ok = clienteMQTT.publish(TOPIC_DATOS, buf, len);
+    // No usar buf hasta que publish termine
+    if (clienteMQTT.publish(TOPIC_PULSO, buf, len)) Serial.println("Heartbeat enviado");
 }
 
 // ============================================================================
@@ -385,9 +404,8 @@ bool leerBoton(int pin, int msDebounce = 50) {
 
 // ============================================================================
 // MENÚ: ajusta un valor numérico con botones SUBE/BAJA
-// Retorna el valor final cuando se presiona MENU
 // ============================================================================
-int16_t ajustarValor(const char* titulo, int16_t valor, 
+int16_t ajustarValor(const char* titulo, int16_t valor,
                      int16_t vMin, int16_t vMax, int16_t paso) {
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print(titulo);
@@ -406,8 +424,6 @@ int16_t ajustarValor(const char* titulo, int16_t valor,
 
 // ============================================================================
 // MENÚ: elige entre dos opciones con botones SUBE/BAJA
-// opt0 y opt1 son los textos de cada opción
-// Retorna 0 o 1 según la selección
 // ============================================================================
 int16_t elegirOpcion(const char* titulo, int16_t valorActual,
                      const char* opt0,   const char* opt1) {
@@ -439,7 +455,6 @@ int16_t elegirOpcion(const char* titulo, int16_t valorActual,
 // ============================================================================
 void programar() {
 
-    // --- Pantalla de versión ---
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print("VERSION 1.7");
     lcd.setCursor(0, 1); lcd.print("24/5/24");
@@ -450,7 +465,6 @@ void programar() {
     while (digitalRead(PIN_BTN_MENU) == LOW)  delay(20);
     delay(100);
 
-    // --- Totales acumulados (solo lectura) ---
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print("PJ:"); lcd.setCursor(4, 0); lcd.print(jugadasTot);
     lcd.setCursor(0, 1); lcd.print("PP:"); lcd.setCursor(4, 1); lcd.print(premiosTot);
@@ -458,7 +472,6 @@ void programar() {
     while (digitalRead(PIN_BTN_MENU) == LOW)  delay(20);
     delay(100);
 
-    // --- Borrar contadores ---
     borrarCont = elegirOpcion("BORRA CONTADORES", LOW, "NO", "SI");
     if (borrarCont == HIGH) {
         guardarUInt(DIR_JUGADAS, 0); guardarUInt(DIR_PREMIOS, 0);
@@ -467,7 +480,6 @@ void programar() {
         lcd.clear(); lcd.setCursor(0, 0); lcd.print("BORRADOS"); delay(1000);
     }
 
-    // --- Parámetros numéricos ---
     modoDisp = elegirOpcion("Display Modo",   modoDisp,  "Modo Contadores", "Modo Coin");
     pago     = ajustarValor("AJUSTAR PAGO",   pago,      1,    99,   1);
     tAgarre  = ajustarValor("AJUSTAR TIEMPO", tAgarre,   500,  5000, 10);
@@ -475,7 +487,6 @@ void programar() {
     fuerza   = ajustarValor("AJUSTAR FUERZA", fuerza,    5,    101,  1);
     tipoBarr = elegirOpcion("TIPO BARRERA",   tipoBarr,  "INFRARROJO", "ULTRASONIDO");
 
-    // --- Prueba barrera ---
     lcd.clear(); lcd.setCursor(0, 0); lcd.print("PRUEBA BARRERA");
     while (digitalRead(PIN_BTN_MENU) == HIGH) {
         lcd.setCursor(0, 1); lcd.print("        ");
@@ -491,7 +502,6 @@ void programar() {
     while (digitalRead(PIN_BTN_MENU) == LOW) delay(20);
     delay(100);
 
-    // --- Guardar todo en EEPROM ---
     guardarInt(DIR_MODO_DISP,    modoDisp);
     guardarInt(DIR_PAGO,         pago);
     guardarInt(DIR_T_AGARRE,     tAgarre);
@@ -527,14 +537,14 @@ void moverPinza(bool conPremio) {
         analogWrite(PIN_MOTOR, fuerza * 1.3);
     }
 
-    // Bucle de espera común
     bool esperando = true;
     while (esperando) {
+        cntPinza = 0;
         while (cntPinza < 3000) {
             clienteMQTT.loop();
-            if (digitalRead(PIN_MOTOR) == HIGH) cntPinza = 0;
-            if (cntPinza == 150)               analogWrite(PIN_MOTOR, 0);
-            if (digitalRead(PIN_MOTOR) == LOW)  { cntPinza++; delay(1); }
+            if (digitalRead(PIN_SENS_PINZA) == HIGH) cntPinza = 0;
+            if (cntPinza == 150) analogWrite(PIN_MOTOR, 0);
+            if (digitalRead(PIN_SENS_PINZA) == LOW)  { cntPinza++; delay(1); }
             if (tBarrCheck <= 20) tBarrCheck++;
             if (tBarrCheck >= 19) {
                 tBarrCheck = 0;
@@ -572,21 +582,20 @@ void setup() {
     pinMode(PIN_BARR_IR,     INPUT_PULLUP);
     pinMode(PIN_CREDITO,     OUTPUT);
     pinMode(PIN_BTN_MENU,    INPUT_PULLUP);
-    pinMode(PIN_SENS_POS,    OUTPUT);
-    pinMode(PIN_MOTOR,       INPUT_PULLUP);
+    pinMode(PIN_MOTOR,       OUTPUT);
+    pinMode(PIN_SENS_PINZA,  INPUT_PULLUP);
     pinMode(PIN_LUZ,         OUTPUT);
     pinMode(PIN_BTN_SUBE,    INPUT_PULLUP);
     pinMode(PIN_BTN_BAJA,    INPUT_PULLUP);
     pinMode(PIN_SENS_PREMIO, INPUT_PULLUP);
     pinMode(PIN_MONEDA,      INPUT_PULLUP);
 
-    // Inicializar EEPROM si es la primera vez
     inicio = leerInt(DIR_INICIO_CHECK);
     if (inicio != VAL_INICIO_CHECK) {
         Serial.println("Inicializando memoria...");
         guardarUInt(DIR_JUGADAS,     0); guardarUInt(DIR_PREMIOS,     0);
         guardarInt (DIR_BANCO,       0); guardarInt (DIR_PAGO,        12);
-        guardarInt (DIR_T_AGARRE, 2000); guardarInt (DIR_FUERZA,      50);
+        guardarInt (DIR_T_AGARRE, 2000); guardarInt (DIR_FUERZA,       50);
         guardarUInt(DIR_JUGADAS_TOT, 0); guardarUInt(DIR_PREMIOS_TOT,  0);
         guardarInt (DIR_TIPO_BARRERA,0); guardarInt (DIR_MODO_DISP,    0);
         guardarInt (DIR_T_FUERTE,    0); guardarInt (DIR_INICIO_CHECK, VAL_INICIO_CHECK);
@@ -612,7 +621,6 @@ void setup() {
     }
     delay(1000);
 
-    // Calibrar distancia de referencia con N muestras
     for (int i = 0; i <= 10; i++) {
         medirDistancia();
         distRef = distAct;
@@ -623,7 +631,7 @@ void setup() {
 
     conectarWifi();
     clienteMQTT.setServer(MQTT_SERVER, MQTT_PUERTO);
-    tickerPulso.attach(60, activarPulso);
+    tickerPulso.attach(600, activarPulso);  // Heartbeat cada 10 min
 }
 
 // ============================================================================
@@ -639,16 +647,13 @@ void loop() {
 
     mostrarDisplay();
 
-    // -------------------------------------------------------------------------
-    // BUCLE DE ESPERA (máquina idle, esperando que el jugador pulse)
-    // -------------------------------------------------------------------------
-    while (digitalRead(PIN_MOTOR) == LOW && debPinza < 5) {
+    while (digitalRead(PIN_SENS_PINZA) == LOW && debPinza < 5) {
         clienteMQTT.loop();
         if (flagPulso) { enviarHeartbeat(); flagPulso = false; }
 
         cntEspera++;
-        if (digitalRead(PIN_MOTOR) == HIGH) debPinza++;
-        if (digitalRead(PIN_MOTOR) == LOW)  debPinza = 0;
+        if (digitalRead(PIN_SENS_PINZA) == HIGH) debPinza++;
+        if (digitalRead(PIN_SENS_PINZA) == LOW)  debPinza = 0;
         if (cntEspera < 100000) cntEspera++;
 
         leerMoneda();
@@ -665,7 +670,7 @@ void loop() {
         if (digitalRead(PIN_BTN_MENU) == LOW && cntMenuBtn == 30) {
             tickerPulso.detach();
             programar();
-            tickerPulso.attach(60, activarPulso);
+            tickerPulso.attach(600, activarPulso);  // Heartbeat cada 10 min
             cntMenuBtn = 0;
         }
 
@@ -685,9 +690,6 @@ void loop() {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // SECUENCIA DE JUEGO
-    // -------------------------------------------------------------------------
     premioDetect = LOW; debPinza = 0; barrActiva = LOW;
     if (creditos >= 1) creditos--;
     mostrarDisplay();
