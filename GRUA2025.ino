@@ -143,9 +143,9 @@ int           borrarCont = LOW;
 // VARIABLES: MQTT Y WIFI
 // ============================================================================
 volatile bool flagPulso    = false;
-unsigned long tUltReconMQTT= 0;
-int prevJugadasTot         = 0;
-int prevPremiosTot         = 0;
+unsigned long tUltReconMQTT = 0;
+unsigned int prevJugadasTot = 0;
+unsigned int prevPremiosTot = 0;
 int prevBanco              = 0;
 
 // ============================================================================
@@ -248,11 +248,10 @@ void reconectarMQTT() {
     if (millis() - tUltReconMQTT < 5000) return;
     tUltReconMQTT = millis();
     Serial.print("Reconectando MQTT...");
-  // En reconectarMQTT():
-  if (clienteMQTT.connect(ID_DISP, "maquinas/status", 1, true, "0")) {  // Last Will = "0" (offline)
-    Serial.println("OK");
-    clienteMQTT.publish("maquinas/status", "1");  // "1" = online
-  } else {
+    if (clienteMQTT.connect(ID_DISP, "maquinas/status", 1, true, "0")) {
+        Serial.println("OK");
+        clienteMQTT.publish("maquinas/status", "1");
+    } else {
         Serial.print("Error rc="); Serial.println(clienteMQTT.state());
     }
 }
@@ -272,11 +271,8 @@ void enviarDatos() {
     doc["payload"]["coin"]   = jugadasTot;
     doc["payload"]["premios"]= premiosTot;
     doc["payload"]["banco"] = banco;
-    // En enviarDatos y enviarHeartbeat - asegurar que el buffer no se reutilice
     char buf[320];
     size_t len = serializeJson(doc, buf);
-    bool ok = clienteMQTT.publish(TOPIC_DATOS, buf, len);
-    // No usar buf hasta que publish termine
     if (clienteMQTT.publish(TOPIC_DATOS, buf, len)) Serial.println("Datos enviados MQTT");
 }
 
@@ -286,18 +282,17 @@ void activarPulso() { flagPulso = true; }
  * Envía heartbeat en formato API del sitio (api_receptor.php).
  */
 void enviarHeartbeat() {
-    if (!clienteMQTT.connected()) return;
-    JsonDocument doc;
-    doc["action"]          = 1;
-    doc["dni_admin"]       = DNI_ADMIN;
-    doc["codigo_hardware"] = ID_DISP;
-    doc["tipo_maquina"]    = 2;   // 2 = Grúa
-    // En enviarDatos y enviarHeartbeat - asegurar que el buffer no se reutilice
-    char buf[320];
-    size_t len = serializeJson(doc, buf);
-    bool ok = clienteMQTT.publish(TOPIC_DATOS, buf, len);
-    // No usar buf hasta que publish termine
-    if (clienteMQTT.publish(TOPIC_PULSO, buf, len)) Serial.println("Heartbeat enviado");
+  if (!clienteMQTT.connected()) return;
+  static char buf[160];   // static = no se reutiliza en stack
+  JsonDocument doc;
+  doc["action"] = 1;
+  doc["dni_admin"] = DNI_ADMIN;
+  doc["codigo_hardware"] = ID_DISP;
+  doc["tipo_maquina"] = 2;
+  doc["ts"] = millis();   // hace cada mensaje único (evita dedup broker)
+  size_t len = serializeJson(doc, buf);
+  buf[len] = '\0';
+  if (clienteMQTT.publish(TOPIC_PULSO, buf, len)) Serial.println("Heartbeat enviado");
 }
 
 // ============================================================================
@@ -630,7 +625,7 @@ void setup() {
 
     conectarWifi();
     clienteMQTT.setServer(MQTT_SERVER, MQTT_PUERTO);
-    tickerPulso.attach(600, activarPulso);  // Heartbeat cada 10 min
+    tickerPulso.attach(6, activarPulso);  // Heartbeat cada 10 min
 }
 
 // ============================================================================
