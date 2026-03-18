@@ -132,7 +132,6 @@ unsigned long cntPinza   = 0;
 int           debPinza   = 0;
 int           pasoFuerza = 0;
 int           delayPaso  = 0;
-int           cntEspera  = 0;
 unsigned long tBarrCheck = 0;
 int           cntBanco   = 0;
 int16_t       inicio     = 0;
@@ -647,15 +646,15 @@ void loop() {
 
     mostrarDisplay();
 
+    // Igual que Gold Digger Híbrida: esperar mientras LOW, salir cuando HIGH
     while (digitalRead(PIN_SENS_PINZA) == LOW && debPinza < 5) {
         clienteMQTT.loop();
         if (flagPulso) { enviarHeartbeat(); flagPulso = false; }
 
-        cntEspera++;
         if (digitalRead(PIN_SENS_PINZA) == HIGH) debPinza++;
         if (digitalRead(PIN_SENS_PINZA) == LOW)  debPinza = 0;
-        if (cntEspera < 100000) cntEspera++;
 
+        cntBanco++;
         leerMoneda();
 
         if (jugadasTot != prevJugadasTot || premiosTot != prevPremiosTot || banco != prevBanco) {
