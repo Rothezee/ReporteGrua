@@ -2,14 +2,23 @@ name: Build ESP32 firmware
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, mqtt-only, master]
     paths:
       - "GruaMQTT/**"
+      - "MqttOnly/**"
       - ".github/workflows/build-firmware.yml"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for release assets (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,39 +31,56 @@ jobs:
           arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core install esp32:esp32@3.0.7 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
 
-      - name: Instalar librerías
+      - name: Instalar librerias
         run: |
           arduino-cli lib install "PubSubClient" "ArduinoJson"
-          # LiquidCrystal I2C (Frank de Brabander / ESP32), no la variante solo-AVR
           arduino-cli lib install --git-url https://github.com/johnrickman/LiquidCrystal_I2C.git
 
-      - name: Compilar (esquema OTA min_spiffs)
+      - name: Calcular version de assets
+        id: meta
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="$(date -u +'%Y.%m.%d-%H%M')-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          mkdir -p dist
+
+      - name: Compilar sketch GruaMQTT (main)
         run: |
           arduino-cli compile \
             --fqbn "esp32:esp32:esp32:PartitionScheme=min_spiffs,FlashFreq=80" \
             --output-dir GruaMQTT/build \
             GruaMQTT
+          BIN_MAIN=$(find GruaMQTT/build -name "*.bin" -type f | head -1)
+          test -n "$BIN_MAIN"
+          cp "$BIN_MAIN" "dist/firmware-main-${VERSION}.bin"
+          sha256sum "dist/firmware-main-${VERSION}.bin" > "dist/firmware-main-${VERSION}.sha256"
 
-      - name: Renombrar bin y SHA256
+      - name: Compilar sketch MqttOnly (mqtt-only)
         run: |
-          BIN=$(find GruaMQTT/build -name "*.bin" -type f | head -1)
-          test -n "$BIN"
-          cp "$BIN" GruaMQTT/build/firmware-main.bin
-          sha256sum GruaMQTT/build/firmware-main.bin | tee GruaMQTT/build/firmware-main.sha256
+          arduino-cli compile \
+            --fqbn "esp32:esp32:esp32:PartitionScheme=min_spiffs,FlashFreq=80" \
+            --output-dir MqttOnly/build \
+            MqttOnly
+          BIN_MQTT_ONLY=$(find MqttOnly/build -name "*.bin" -type f | head -1)
+          test -n "$BIN_MQTT_ONLY"
+          cp "$BIN_MQTT_ONLY" "dist/firmware-mqtt-only-${VERSION}.bin"
+          sha256sum "dist/firmware-mqtt-only-${VERSION}.bin" > "dist/firmware-mqtt-only-${VERSION}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: firmware-main
-          path: |
-            GruaMQTT/build/firmware-main.bin
-            GruaMQTT/build/firmware-main.sha256
+          name: firmware-release-files
+          path: dist/*
 
-      # Opcional: creá el tag `firmware-builds` en GitHub y descomentá para subir al release fijo
-      # - uses: softprops/action-gh-release@v2
-      #   if: github.ref == 'refs/heads/main'
-      #   with:
-      #     tag_name: firmware-builds
-      #     name: Firmware builds
-      #     files: GruaMQTT/build/firmware-main.bin
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publicar assets versionados en release fijo
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: firmware-builds
+          name: Firmware builds
+          files: dist/*
+          append_body: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
