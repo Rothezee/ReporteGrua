@@ -747,8 +747,8 @@ int16_t elegirOpcion(const char* titulo, int16_t valorActual,
 void programar() {
 
     lcd.clear();
-    lcd.setCursor(0, 0); lcd.print("VERSION 2.0.0 MQTT");
-    lcd.setCursor(0, 1); lcd.print("20/3/26");
+    lcd.setCursor(0, 0); lcd.print("VERSION 2.0.1");
+    lcd.setCursor(0, 1); lcd.print("MQTT 21/3/26");
     delay(500);
     while (digitalRead(PIN_BTN_MENU) == LOW)  delay(20);
     delay(100);
