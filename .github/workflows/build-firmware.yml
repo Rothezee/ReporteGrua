@@ -34,7 +34,7 @@ jobs:
       - name: Instalar librerias
         run: |
           arduino-cli lib install "PubSubClient" "ArduinoJson"
-          arduino-cli lib install --git-url https://github.com/johnrickman/LiquidCrystal_I2C.git
+          arduino-cli lib install "LiquidCrystal I2C"
 
       - name: Calcular version de assets
         id: meta
