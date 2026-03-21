@@ -26,9 +26,8 @@
 #include <LiquidCrystal_I2C.h>
 #include <Arduino.h>
 #include <WiFi.h>
-#if MQTT_USAR_TLS
+// Siempre: OTA HTTPS usa WiFiClientSecure. MQTT puede usar WiFiClient o Secure según MQTT_USAR_TLS.
 #include <WiFiClientSecure.h>
-#endif
 #include <HTTPClient.h>
 #include <Update.h>
 #include <PubSubClient.h>
@@ -361,7 +360,8 @@ bool descargarYFlashearOta(const char* url, const char* sha256Hex) {
     WiFiClientSecure cli;
     cli.setInsecure();
     HTTPClient http;
-    http.setTimeout(120000);
+    // setTimeout en ESP32 suele ser uint16_t ms (máx. ~65 s)
+    http.setTimeout(60000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     if (!http.begin(cli, url)) {
         Serial.println("OTA: begin falló");
