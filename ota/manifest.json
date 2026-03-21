@@ -1,14 +1,14 @@
 {
   "branches": {
     "main": {
-      "version": "2026.03.21-1409-b61beb3",
-      "url": "https://github.com/Rothezee/ReporteGrua/releases/download/firmware-builds/firmware-main-2026.03.21-1409-b61beb3.bin",
-      "sha256": "a5ef875ccb87dca49b53dded696485818013ee759aa5a107edc890ccfa4e5052"
+      "version": "2.0.0",
+      "url": "https://github.com/Rothezee/ReporteGrua/releases/download/firmware-builds/firmware-main-2.0.0.bin",
+      "sha256": "560a9787894b7acb9cde5aa2896e0af37cbfd230c2f47fbb1c28805712c81359"
     },
     "mqtt-only": {
-      "version": "2026.03.21-1409-b61beb3",
-      "url": "https://github.com/Rothezee/ReporteGrua/releases/download/firmware-builds/firmware-mqtt-only-2026.03.21-1409-b61beb3.bin",
-      "sha256": "c946a5eda8005a23353a2dec84ee1ce160bbc5a5371b932ecee6ef96a2d6a911"
+      "version": "2.0.0",
+      "url": "https://github.com/Rothezee/ReporteGrua/releases/download/firmware-builds/firmware-mqtt-only-2.0.0.bin",
+      "sha256": "6f36f98ca72bda5c3232213cc9e8cb2869cf2d95773348bf731ac36b5256293c"
     }
   }
 }
