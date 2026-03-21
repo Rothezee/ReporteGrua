@@ -24,7 +24,9 @@ jobs:
 
       - name: Instalar librerías
         run: |
-          arduino-cli lib install "PubSubClient" "ArduinoJson" "LiquidCrystal I2C"
+          arduino-cli lib install "PubSubClient" "ArduinoJson"
+          # LiquidCrystal I2C (Frank de Brabander / ESP32), no la variante solo-AVR
+          arduino-cli lib install --git-url https://github.com/johnrickman/LiquidCrystal_I2C.git
 
       - name: Compilar (esquema OTA min_spiffs)
         run: |

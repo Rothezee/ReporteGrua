@@ -6,7 +6,7 @@ Para contratos MQTT, manifiesto OTA y variables del servidor, ver **[HANDOFF.md]
 
 - Código: **[`GruaMQTT/GruaMQTT.ino`](GruaMQTT/GruaMQTT.ino)** (carpeta = nombre del `.ino`, requerido por Arduino IDE y `arduino-cli`).
 - En **Arduino IDE**: *Archivo → Abrir* y elegí la carpeta `GruaMQTT`.
-- **Librerías** (Gestor): `PubSubClient`, `ArduinoJson`, `LiquidCrystal I2C`.
+- **Librerías** (Gestor): `PubSubClient`, `ArduinoJson`, y **Liquid Crystal I2C compatible con ESP32** (p. ej. *LiquidCrystal I2C* de **Frank de Brabander**, o el fork [johnrickman/LiquidCrystal_I2C](https://github.com/johnrickman/LiquidCrystal_I2C)). Evitá la que el IDE marque como solo **avr**.
 - **Placa ESP32**: esquema de particiones con OTA (p. ej. *Minimal SPIFFS*), alineado al workflow de CI.
 - **CI**: [`.github/workflows/build-firmware.yml`](.github/workflows/build-firmware.yml) genera `firmware-main.bin` y un `.sha256`; copiá el hash a [`ota/manifest.json`](ota/manifest.json) cuando publiques el bin en un release.
 

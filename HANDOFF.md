@@ -17,7 +17,7 @@ El panel **no** incluye ya una copia local del firmware: el código fuente y el 
 - **Datos:** `maquinas/<codigo_hardware>/datos` — JSON formato API (`action`, `dni_admin`, `codigo_hardware`, `tipo_maquina`, `payload`, …).
 - **Heartbeat:** `maquinas/<id>/heartbeat`.
 - **Config remota (grúa):** `maquinas/<id>/config` — JSON: `cmd: "set_grua_params"`, `pago` (1–99), `t_agarre` (500–5000), `t_fuerte` (0–5000), `fuerza` (5–101), `ts`.
-- **OTA:** `maquinas/<id>/ota` — JSON: `cmd: "ota_update"`, `url` (solo `https://`), `version`, `sha256` (64 hex), `ts`, opcional `branch`, opcional `ota_secret` si el servidor define `OTA_SHARED_SECRET`.
+- **OTA:** `maquinas/<id>/ota` — JSON: `cmd: "ota_update"`, `url` (solo `https://`), `version`, `sha256` (64 hex), `ts`, opcional `branch`, opcional `ota_secret` si el servidor define `OTA_SHARED_SECRET` (en firmware: constante `OTA_SHARED_SECRET_STR`, misma cadena).
 
 El `mqtt_listener.php` del panel **ignora** `.../config` y `.../ota` (no van a `api_receptor`).
 

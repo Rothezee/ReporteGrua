@@ -19,11 +19,10 @@
 #ifndef MQTT_USAR_TLS
 #define MQTT_USAR_TLS 0
 #endif
-#ifndef OTA_SHARED_SECRET
-#define OTA_SHARED_SECRET ""
-#endif
 
 #include <Wire.h>
+// LCD I2C: usá una variante compatible con ESP32 (no la que indica solo AVR).
+// Recomendado: "LiquidCrystal I2C" de Frank de Brabander, o fork johnrickman (GitHub).
 #include <LiquidCrystal_I2C.h>
 #include <Arduino.h>
 #include <WiFi.h>
@@ -98,6 +97,9 @@ char topic_config[96];
 char topic_ota[96];
 
 const char* DNI_ADMIN   = "00000000";
+
+// Mismo valor que OTA_SHARED_SECRET del panel si aplica; cadena vacía = no validar ota_secret
+static const char OTA_SHARED_SECRET_STR[] = "";
 
 // ============================================================================
 // OBJETOS
@@ -331,14 +333,14 @@ bool encolarOtaDesdeJson(JsonDocument& doc) {
     uint8_t tmp[32];
     if (!parseSha256HexOta(sha, tmp)) return false;
 
-#if defined(OTA_SHARED_SECRET) && OTA_SHARED_SECRET[0] != '\0'
-    const char* sec = doc["ota_secret"].as<const char*>();
-    if (!sec) sec = "";
-    if (strcmp(sec, OTA_SHARED_SECRET) != 0) {
-        Serial.println("OTA rechazada: ota_secret inválido o ausente");
-        return false;
+    if (OTA_SHARED_SECRET_STR[0] != '\0') {
+        const char* sec = doc["ota_secret"].as<const char*>();
+        if (!sec) sec = "";
+        if (strcmp(sec, OTA_SHARED_SECRET_STR) != 0) {
+            Serial.println("OTA rechazada: ota_secret inválido o ausente");
+            return false;
+        }
     }
-#endif
 
     strncpy(otaPendienteUrl, url, sizeof(otaPendienteUrl) - 1);
     otaPendienteUrl[sizeof(otaPendienteUrl) - 1] = '\0';
