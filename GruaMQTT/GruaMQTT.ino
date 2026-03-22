@@ -20,6 +20,10 @@
 #define MQTT_USAR_TLS 0
 #endif
 
+#ifndef FW_VERSION
+#define FW_VERSION "0.0.0-local"
+#endif
+
 #include <Wire.h>
 // LCD I2C: usá una variante compatible con ESP32 (no la que indica solo AVR).
 // Recomendado: "LiquidCrystal I2C" de Frank de Brabander, o fork johnrickman (GitHub).
@@ -114,7 +118,7 @@ Ticker       tickerPulso;
 
 // ============================================================================
 // OTA (cola; se ejecuta en espera y entre ciclos)
-// ============================================================================
+// =======================================================================a=====
 volatile bool otaPendiente = false;
 char otaPendienteUrl[256];
 char otaPendienteSha256[65];
@@ -747,7 +751,7 @@ int16_t elegirOpcion(const char* titulo, int16_t valorActual,
 void programar() {
 
     lcd.clear();
-    lcd.setCursor(0, 0); lcd.print("VERSION 2.0.0");
+    lcd.setCursor(0, 0); lcd.print("VERSION "); lcd.print(FW_VERSION);
     lcd.setCursor(0, 1); lcd.print("MQTT 21/3/26");
     delay(500);
     while (digitalRead(PIN_BTN_MENU) == LOW)  delay(20);

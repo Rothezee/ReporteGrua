@@ -2,26 +2,25 @@ name: Build ESP32 firmware
 
 on:
   push:
-    branches: [main, mqtt-only, master]
+    branches: [main]
     paths:
+      - "VERSION"
       - "GruaMQTT/**"
       - "MqttOnly/**"
       - ".github/workflows/build-firmware.yml"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version label for release assets (optional)"
-        required: false
-        type: string
 
 permissions:
   contents: write
 
 jobs:
   build-and-release:
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: arduino/setup-arduino-cli@v2
 
@@ -36,22 +35,59 @@ jobs:
           arduino-cli lib install "PubSubClient" "ArduinoJson"
           arduino-cli lib install "LiquidCrystal I2C"
 
-      - name: Calcular version de assets
-        id: meta
+      - name: Calcular proxima version SemVer (Conventional Commits)
+        id: semver
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION="$(date -u +'%Y.%m.%d-%H%M')-${GITHUB_SHA::7}"
+          CURRENT_VERSION="$(tr -d '\r\n' < VERSION)"
+          if ! echo "$CURRENT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION invalida: $CURRENT_VERSION"
+            exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          COMMITS=""
+          if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            COMMITS="$(git log --format=%B "$BEFORE_SHA..$GITHUB_SHA")"
+          else
+            COMMITS="$(git log --format=%B -n 20)"
+          fi
+
+          BUMP="patch"
+          if echo "$COMMITS" | grep -Eiq 'BREAKING CHANGE|^[a-zA-Z]+(\([^)]+\))?!:'; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -Eiq '^feat(\([^)]+\))?:'; then
+            BUMP="minor"
+          else
+            BUMP="patch"
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          if [ "$BUMP" = "major" ]; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif [ "$BUMP" = "minor" ]; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          if ! echo "$NEXT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "SemVer calculada invalida: $NEXT_VERSION"
+            exit 1
+          fi
+
+          echo "$NEXT_VERSION" > VERSION
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$NEXT_VERSION" >> "$GITHUB_ENV"
           mkdir -p dist
 
       - name: Compilar sketch GruaMQTT (main)
         run: |
           arduino-cli compile \
             --fqbn "esp32:esp32:esp32:PartitionScheme=min_spiffs,FlashFreq=80" \
+            --build-property "build.extra_flags=-DFW_VERSION=\"${VERSION}\"" \
             --output-dir GruaMQTT/build \
             GruaMQTT
           BIN_MAIN=$(find GruaMQTT/build -name "*.bin" -type f | head -1)
@@ -63,17 +99,13 @@ jobs:
         run: |
           arduino-cli compile \
             --fqbn "esp32:esp32:esp32:PartitionScheme=min_spiffs,FlashFreq=80" \
+            --build-property "build.extra_flags=-DFW_VERSION=\"${VERSION}\"" \
             --output-dir MqttOnly/build \
             MqttOnly
           BIN_MQTT_ONLY=$(find MqttOnly/build -name "*.bin" -type f | head -1)
           test -n "$BIN_MQTT_ONLY"
           cp "$BIN_MQTT_ONLY" "dist/firmware-mqtt-only-${VERSION}.bin"
           sha256sum "dist/firmware-mqtt-only-${VERSION}.bin" > "dist/firmware-mqtt-only-${VERSION}.sha256"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: firmware-release-files
-          path: dist/*
 
       - name: Publicar assets versionados en release fijo
         uses: softprops/action-gh-release@v2
@@ -84,3 +116,40 @@ jobs:
           append_body: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-release-files-${{ steps.semver.outputs.version }}
+          path: dist/*
+
+      - name: Regenerar ota/manifest.json
+        run: |
+          SHA_MAIN=$(cut -d' ' -f1 "dist/firmware-main-${VERSION}.sha256")
+          SHA_MQTT_ONLY=$(cut -d' ' -f1 "dist/firmware-mqtt-only-${VERSION}.sha256")
+          cat > ota/manifest.json <<EOF
+          {
+            "branches": {
+              "main": {
+                "version": "${VERSION}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/firmware-builds/firmware-main-${VERSION}.bin",
+                "sha256": "${SHA_MAIN}"
+              },
+              "mqtt-only": {
+                "version": "${VERSION}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/firmware-builds/firmware-mqtt-only-${VERSION}.bin",
+                "sha256": "${SHA_MQTT_ONLY}"
+              }
+            }
+          }
+          EOF
+
+      - name: Commit automatico de VERSION y manifest
+        run: |
+          git add VERSION ota/manifest.json
+          if git diff --cached --quiet; then
+            echo "Sin cambios para commit"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore(release): ${VERSION} [skip ci]"
+          git push origin HEAD:main

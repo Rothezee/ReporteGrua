@@ -41,8 +41,8 @@ El `mqtt_listener.php` del panel **ignora** `.../config` y `.../ota` (no van a `
 
 - [x] **`GruaMQTT/GruaMQTT.ino`**: `ID_DISP` = `codigo_hardware` en BD; tópicos `maquinas/<ID>/...`; `subscribe` a `config` y `ota`; OTA HTTPS (`WiFiClientSecure` + `Update` + SHA256); ejecución OTA en **bucle de espera** (pinza en reposo) y al **fin de `loop()`** (no en `moverPinza`). MQTT TLS opcional: `MQTT_USAR_TLS`.
 - [ ] **Partición OTA** en Arduino IDE: usar esquema con dos particiones de app (en CI: `PartitionScheme=min_spiffs`).
-- [x] **`.github/workflows/build-firmware.yml`**: compila con `arduino-cli`; sube artifact `firmware-main.bin` + `.sha256`. Publicación al release `firmware-builds` opcional (comentada en el YAML).
-- [x] **`ota/manifest.json`**: plantilla con URL de release; reemplazar `sha256` tras cada build publicado.
+- [x] **`.github/workflows/build-firmware.yml`**: compila con `arduino-cli` (`main` + `mqtt-only`), publica assets versionados en release `firmware-builds`, regenera `ota/manifest.json` y actualiza `VERSION` automáticamente.
+- [x] **`ota/manifest.json`**: se genera automáticamente desde CI con URL + SHA256 reales para cada rama OTA.
 - [x] **README / HANDOFF**: enlaces y resumen MQTT/OTA (mantener al día con el panel).
 
 ## Variables de entorno útiles (servidor del panel)
@@ -53,6 +53,13 @@ El `mqtt_listener.php` del panel **ignora** `.../config` y `.../ota` (no van a `
 
 - **main** (o similar): firmware grúa completo.
 - **mqtt-only** (u otra): solo reportes MQTT, sin lógica de grúa — mismo repo, distinto binario en el manifiesto; el operador elige rama en el modal OTA del dashboard.
+
+## Politica de versionado (SemVer)
+
+- Fuente oficial: archivo `VERSION` (`x.y.z`).
+- Cada release OTA calcula bump automaticamente por Conventional Commits.
+- El valor de `version` en `ota/manifest.json` sale de `VERSION` y se actualiza desde CI.
+- Display de `GruaMQTT` usa `FW_VERSION` inyectado por CI (fallback local `0.0.0-local`).
 
 ---
 
@@ -74,3 +81,5 @@ El `mqtt_listener.php` del panel **ignora** `.../config` y `.../ota` (no van a `
 | CI + manifiesto | [`.github/workflows/build-firmware.yml`](.github/workflows/build-firmware.yml), [`ota/manifest.json`](ota/manifest.json). |
 
 Actualizá esta tabla cuando implementes cambios.
+
+

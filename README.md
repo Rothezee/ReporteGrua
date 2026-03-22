@@ -8,9 +8,23 @@ Para contratos MQTT, manifiesto OTA y variables del servidor, ver **[HANDOFF.md]
 - En **Arduino IDE**: *Archivo → Abrir* y elegí la carpeta `GruaMQTT`.
 - **Librerías** (Gestor): `PubSubClient`, `ArduinoJson`, y **Liquid Crystal I2C compatible con ESP32** (p. ej. *LiquidCrystal I2C* de **Frank de Brabander**, o el fork [johnrickman/LiquidCrystal_I2C](https://github.com/johnrickman/LiquidCrystal_I2C)). Evitá la que el IDE marque como solo **avr**.
 - **Placa ESP32**: esquema de particiones con OTA (p. ej. *Minimal SPIFFS*), alineado al workflow de CI.
-- **CI**: [`.github/workflows/build-firmware.yml`](.github/workflows/build-firmware.yml) genera `firmware-main.bin` y un `.sha256`; copiá el hash a [`ota/manifest.json`](ota/manifest.json) cuando publiques el bin en un release.
+- **CI**: [`.github/workflows/build-firmware.yml`](.github/workflows/build-firmware.yml) calcula SemVer por Conventional Commits, compila `main` + `mqtt-only`, publica assets en `firmware-builds` y actualiza automáticamente `VERSION` + `ota/manifest.json`.
 
 Este firmware está diseñado para controlar una máquina de premios tipo grúa utilizando un microcontrolador ESP32.
+
+## Versionado SemVer automatico
+
+- Fuente unica: archivo [`VERSION`](VERSION) (`MAJOR.MINOR.PATCH`).
+- Bump automático por Conventional Commits:
+  - `BREAKING CHANGE` o `tipo!:` -> `MAJOR`
+  - `feat:` -> `MINOR`
+  - `fix:` y resto -> `PATCH`
+- El commit automático de release usa `[skip ci]` para evitar loops de workflow.
+
+Ejemplos:
+- `fix: corregir reconexion mqtt`
+- `feat: agregar parametro remoto t_fuerte`
+- `feat!: cambiar contrato del payload de datos`
 
 El sistema gestiona la lógica de juego, el monedero, los sensores de premio, la fuerza de la pinza y la conectividad WiFi/MQTT para reportar estadísticas en tiempo real a un servidor remoto.
 
@@ -112,3 +126,5 @@ const int   MQTT_PUERTO = 1883;
 * **Motor de Red No Bloqueante:** Se eliminaron los `delay()` en las rutinas de reconexión WiFi y MQTT, evitando que la máquina se "congele" o trague monedas si el router se reinicia.
 * **Keep-Alive en Bucle de Espera:** Se integró la lógica de monitoreo de red y pulsos Heartbeat dentro de los bucles inactivos para evitar el baneo de brokers públicos como EMQX.
 * **Protección de Datos:** Actualización del envío MQTT para reportar el conteo final de partidas de manera segura una vez que la grúa vuelve a su posición de origen.
+
+
