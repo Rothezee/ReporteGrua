@@ -85,6 +85,7 @@ int AUX = 0;
 int AUXCOIN = 0;
 int AUX2COIN = 0;
 int monedasAcumuladas = 0;
+unsigned long lastCoinTick = 0;
 int16_t FICHAS_POR_JUEGO = 1;
 int16_t FUERZA = 50;
 int16_t INICIO = 0;
@@ -401,6 +402,13 @@ void actualizarPantalla() {
     graficar();
 }
 
+void sincronizarPrevContadores() {
+    prevPJFIJO = PJFIJO;
+    prevPPFIJO = PPFIJO;
+    prevBANK = BANK;
+    prevPAGO = PAGO;
+}
+
 void registrarPartidoPorMoneda() {
     COIN++;
     PJFIJO++;
@@ -410,26 +418,18 @@ void registrarPartidoPorMoneda() {
     putEEPROMUint(1, COIN);
     putEEPROMUint(25, PJFIJO);
     putEEPROM(9, BANK);
-    if (enviarTelemetriaGrua()) {
-        prevPJFIJO = PJFIJO;
-        prevPPFIJO = PPFIJO;
-        prevBANK = BANK;
-        prevPAGO = PAGO;
-    }
+    sincronizarPrevContadores();
     marcarPantalla();
+    enviarTelemetriaGrua();
 }
 
 void tareasIdle() {
     leecoin();
 
     if (PJFIJO != prevPJFIJO || PPFIJO != prevPPFIJO || BANK != prevBANK || PAGO != prevPAGO) {
-        if (enviarTelemetriaGrua()) {
-            prevPJFIJO = PJFIJO;
-            prevPPFIJO = PPFIJO;
-            prevBANK = BANK;
-            prevPAGO = PAGO;
-        }
+        sincronizarPrevContadores();
         marcarPantalla();
+        enviarTelemetriaGrua();
     }
 
     if (digitalRead(DATO3) == LOW) AUXDATO3++;
@@ -440,10 +440,6 @@ void tareasIdle() {
         programar();
         tickerPulso.attach(60, activarHeartbeat);
         AUXDATO3 = 0;
-    }
-
-    if (CTIEMPO >= 18000 && BANKTIEMPO > 0) {
-        CTIEMPO = 0; BANKTIEMPO--;
     }
 
     if (TIEMPO8 < 200) {
@@ -461,24 +457,25 @@ void tareasIdle() {
 }
 
 void leecoin() {
+    unsigned long ahora = millis();
+    if (ahora - lastCoinTick < 1) return;
+    lastCoinTick = ahora;
+
     int fichasPorJuego = FICHAS_POR_JUEGO < 1 ? 1 : FICHAS_POR_JUEGO;
 
-    while (digitalRead(ECOIN) == LOW && AUXCOIN < 5) {
-        AUXCOIN++; delay(1);
-        if (digitalRead(ECOIN) == HIGH) AUXCOIN = 0;
+    if (digitalRead(ECOIN) == LOW) {
+        if (AUXCOIN < 5) AUXCOIN++;
+    } else if (AUXCOIN > 0) {
+        AUXCOIN--;
     }
-    if (AUXCOIN == 5 && AUX2COIN == LOW) {
+
+    if (AUXCOIN >= 5 && AUX2COIN == LOW) {
         AUX2COIN = HIGH;
         monedasAcumuladas++;
         while (monedasAcumuladas >= fichasPorJuego) {
             monedasAcumuladas -= fichasPorJuego;
             registrarPartidoPorMoneda();
         }
-        marcarPantalla();
-    }
-    while (digitalRead(ECOIN) == HIGH && AUXCOIN > 0) {
-        AUXCOIN--; delay(2);
-        if (digitalRead(ECOIN) == LOW) AUXCOIN = 5;
     }
     if (AUXCOIN == 0 && AUX2COIN == HIGH) AUX2COIN = LOW;
 }
@@ -517,7 +514,9 @@ void leerbarrera() {
                 putEEPROMUint(29, PPFIJO);
                 putEEPROM(9, BANK);
             }
+            sincronizarPrevContadores();
             marcarPantalla();
+            enviarTelemetriaGrua();
         }
     }
     if (BARRERAAUX2 == 0) {
@@ -529,7 +528,9 @@ void leerbarrera() {
             putEEPROMUint(5, CONTSALIDA);
             putEEPROMUint(29, PPFIJO);
             putEEPROM(9, BANK);
+            sincronizarPrevContadores();
             marcarPantalla();
+            enviarTelemetriaGrua();
         }
     }
 }
@@ -1000,7 +1001,8 @@ void setup() {
     
     // CONEXIÓN MQTT
     connectToWiFi();
-    client.setServer(mqtt_server, mqtt_port); 
+    client.setServer(mqtt_server, mqtt_port);
+    client.setBufferSize(512);
     tickerPulso.attach(60, activarHeartbeat);
     marcarPantalla();
 }
@@ -1022,7 +1024,6 @@ void loop() {
         debeEnviarHeartbeat = false;
     }
 
-    CTIEMPO++;
-    tareasIdle();
     actualizarPantalla();
+    tareasIdle();
 }
