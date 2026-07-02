@@ -1,4 +1,4 @@
-// Junio 2026
+// Julio 2026
 // Protocolo: MQTT
 // Memoria: Seleccionable (Interna ESP32 o Externa I2C)
 
