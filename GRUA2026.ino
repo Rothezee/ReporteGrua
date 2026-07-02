@@ -1,4 +1,4 @@
-// Julio 2026
+// Junio 2026
 // Protocolo: MQTT
 // Memoria: Seleccionable (Interna ESP32 o Externa I2C)
 
@@ -96,6 +96,7 @@ int16_t FICHAS_POR_JUEGO = 1;
 int16_t MODO_MAQUINA = MODO_COIN;
 int CREDITO = 0;
 unsigned long lastPinzaTick = 0;
+bool epinzaArmado = false;
 int16_t FUERZA = 50;
 int16_t INICIO = 0;
 int BORRARCONTADORES = LOW;
@@ -592,7 +593,7 @@ void jugarPinza() {
     const unsigned long TIMEOUT_JUEGO_MS = 60000;
 
     BARRERAAUX = LOW; AUX = 0; BARRERA = LOW;
-    CREDITO--;
+    if (CREDITO > 0) CREDITO--;
 
     COIN++; BANK++; PJFIJO++;
     if (BANKTIEMPO < 10) BANKTIEMPO++;
@@ -692,14 +693,20 @@ void atenderPinza() {
     if (digitalRead(EPINZA) == HIGH) {
         if (AUX < 5) AUX++;
     } else {
-        AUX = 0;
+        // Switch cerrado (pinza en reposo): rearmar para el proximo juego
+        if (AUX > 0) AUX--;
+        if (AUX == 0) epinzaArmado = true;
         return;
     }
 
     if (AUX < 5) return;
     AUX = 0;
 
-    if (CREDITO < 1) return;
+    // Solo cuenta si venia de reposo: 1 apertura = 1 juego, siempre,
+    // sin importar la cantidad de fichas ni el credito disponible
+    if (!epinzaArmado) return;
+    epinzaArmado = false;
+
     jugarPinza();
 }
 
