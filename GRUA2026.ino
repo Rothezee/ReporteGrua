@@ -24,7 +24,7 @@
 
 // --- CONFIGURACIÓN WIFI Y BROKER ---
 const char* DNI_ADMIN = "00000000";
-const char* CODIGO_HARDWARE = "ESP32_004";
+const char* CODIGO_HARDWARE = "Grua_123";
 const int TIPO_MAQUINA = 2;
 
 const char* ssid = "FIBRA-WIFI6-229F";
@@ -47,12 +47,18 @@ char topic_heartbeat[52];
 #define SPINZA 16
 #define DATO6 34
 #define DATO10 35
-#define DATO12 27
-#define ECOIN 26
+#define DATO12 26
+#define ECOIN 27
 
 #define EEPROM_INIT_CHECK_VALUE 35
 #define EEPROM_FICHAS_POR_JUEGO 49
+#define EEPROM_MODO_MAQUINA 53
+#define EEPROM_FICHAS_TOTAL 57
 #define PWM_FREQUENCY 100
+
+// Modos de conteo
+#define MODO_COIN 0     // fichas suman PJ directo (sin pinza)
+#define MODO_CONTROL 1  // fichas suman credito; EPINZA juega y descuenta
 
 int lcdColumns = 16;
 int lcdRows = 2;
@@ -87,11 +93,15 @@ int AUX2COIN = 0;
 int monedasAcumuladas = 0;
 unsigned long lastCoinTick = 0;
 int16_t FICHAS_POR_JUEGO = 1;
+int16_t MODO_MAQUINA = MODO_COIN;
+int CREDITO = 0;
+unsigned long lastPinzaTick = 0;
 int16_t FUERZA = 50;
 int16_t INICIO = 0;
 int BORRARCONTADORES = LOW;
 unsigned int PJFIJO = 0;
 unsigned int PPFIJO = 0;
+unsigned int FICHAS_TOTAL = 0;
 int BARRERAAUX = 0;
 float FUERZAAUX = 0;
 float FUERZAV = 0;
@@ -109,6 +119,7 @@ int prevPJFIJO = 0;
 int prevPPFIJO = 0;
 int prevBANK = 0;
 int prevPAGO = 0;
+int prevFICHAS_TOTAL = 0;
 int AUXDATO3 = 0;
 
 unsigned long lastTelemetriaEnvio = 0;
@@ -116,6 +127,7 @@ int lastTelPago = -1;
 int lastTelCoin = -1;
 int lastTelPremios = -1;
 int lastTelBanco = -1;
+int lastTelCoins = -1;
 const unsigned long TELEMETRIA_DEDUP_MS = 3000;
 
 volatile bool debeEnviarHeartbeat = false;
@@ -250,19 +262,21 @@ void construirTopicsMqtt() {
     snprintf(topic_heartbeat, sizeof(topic_heartbeat), "maquinas/%s/heartbeat", CODIGO_HARDWARE);
 }
 
-bool telemetriaEsDuplicada(int pago, int coin, int premios, int banco) {
+bool telemetriaEsDuplicada(int pago, int coin, int premios, int banco, int coins) {
     if (pago != lastTelPago || coin != lastTelCoin ||
-        premios != lastTelPremios || banco != lastTelBanco) {
+        premios != lastTelPremios || banco != lastTelBanco ||
+        coins != lastTelCoins) {
         return false;
     }
     return (millis() - lastTelemetriaEnvio) < TELEMETRIA_DEDUP_MS;
 }
 
-void marcarTelemetriaEnviada(int pago, int coin, int premios, int banco) {
+void marcarTelemetriaEnviada(int pago, int coin, int premios, int banco, int coins) {
     lastTelPago = pago;
     lastTelCoin = coin;
     lastTelPremios = premios;
     lastTelBanco = banco;
+    lastTelCoins = coins;
     lastTelemetriaEnvio = millis();
 }
 
@@ -324,11 +338,12 @@ bool enviarTelemetriaGrua() {
     if (!client.connected()) return false;
 
     int pago = PAGO;
-    int coin = PJFIJO;
+    int coin = PJFIJO;       // partidas / juegos jugados
     int premios = PPFIJO;
     int banco = BANK;
+    int coins = FICHAS_TOTAL; // fichas ingresadas (total acumulado)
 
-    if (telemetriaEsDuplicada(pago, coin, premios, banco)) return true;
+    if (telemetriaEsDuplicada(pago, coin, premios, banco, coins)) return true;
 
     JsonDocument doc;
     doc["action"] = 2;
@@ -340,11 +355,12 @@ bool enviarTelemetriaGrua() {
     payload["coin"] = coin;
     payload["premios"] = premios;
     payload["banco"] = banco;
+    payload["coins"] = coins;
 
-    char buffer[256];
+    char buffer[320];
     serializeJson(doc, buffer);
     if (client.publish(topic_datos, buffer)) {
-        marcarTelemetriaEnviada(pago, coin, premios, banco);
+        marcarTelemetriaEnviada(pago, coin, premios, banco, coins);
         Serial.println("Telemetria MQTT enviada");
         return true;
     }
@@ -387,8 +403,13 @@ void graficar() {
     }
     if (GRUADISPLAY == 1) {
         lcd.clear();
-        lcd.setCursor(0, 0); lcd.print("PJ:");
-        lcd.setCursor(3, 0); lcd.print(PJFIJO);
+        if (MODO_MAQUINA == MODO_CONTROL) {
+            lcd.setCursor(0, 0); lcd.print("Credito:");
+            lcd.setCursor(9, 0); lcd.print(CREDITO);
+        } else {
+            lcd.setCursor(0, 0); lcd.print("PJ:");
+            lcd.setCursor(3, 0); lcd.print(PJFIJO);
+        }
         lcd.setCursor(0, 1); lcd.print("Fichas:");
         lcd.setCursor(8, 1); lcd.print(monedasAcumuladas);
         lcd.print("/");
@@ -407,9 +428,18 @@ void sincronizarPrevContadores() {
     prevPPFIJO = PPFIJO;
     prevBANK = BANK;
     prevPAGO = PAGO;
+    prevFICHAS_TOTAL = FICHAS_TOTAL;
 }
 
 void registrarPartidoPorMoneda() {
+    if (MODO_MAQUINA == MODO_CONTROL) {
+        CREDITO++;
+        sincronizarPrevContadores();
+        marcarPantalla();
+        enviarTelemetriaGrua();
+        return;
+    }
+
     COIN++;
     PJFIJO++;
     BANK++;
@@ -426,7 +456,8 @@ void registrarPartidoPorMoneda() {
 void tareasIdle() {
     leecoin();
 
-    if (PJFIJO != prevPJFIJO || PPFIJO != prevPPFIJO || BANK != prevBANK || PAGO != prevPAGO) {
+    if (PJFIJO != prevPJFIJO || PPFIJO != prevPPFIJO || BANK != prevBANK ||
+        PAGO != prevPAGO || FICHAS_TOTAL != prevFICHAS_TOTAL) {
         sincronizarPrevContadores();
         marcarPantalla();
         enviarTelemetriaGrua();
@@ -440,6 +471,12 @@ void tareasIdle() {
         programar();
         tickerPulso.attach(60, activarHeartbeat);
         AUXDATO3 = 0;
+    }
+
+    CTIEMPO++;
+    if (CTIEMPO >= 18000 && BANKTIEMPO > 0) {
+        CTIEMPO = 0; BANKTIEMPO--;
+        marcarPantalla();
     }
 
     if (TIEMPO8 < 200) {
@@ -471,6 +508,8 @@ void leecoin() {
 
     if (AUXCOIN >= 5 && AUX2COIN == LOW) {
         AUX2COIN = HIGH;
+        FICHAS_TOTAL++;
+        putEEPROMUint(EEPROM_FICHAS_TOTAL, FICHAS_TOTAL);
         monedasAcumuladas++;
         while (monedasAcumuladas >= fichasPorJuego) {
             monedasAcumuladas -= fichasPorJuego;
@@ -533,6 +572,135 @@ void leerbarrera() {
             enviarTelemetriaGrua();
         }
     }
+}
+
+// ============================================================================
+// PINZA (solo MODO CONTROL)
+// ============================================================================
+
+void delayConMonedas(unsigned long ms) {
+    unsigned long inicio = millis();
+    while (millis() - inicio < ms) {
+        leecoin();
+        delay(1);
+    }
+}
+
+void jugarPinza() {
+    int auxtbarrera = 0;
+    unsigned long inicioJuego = millis();
+    const unsigned long TIMEOUT_JUEGO_MS = 60000;
+
+    BARRERAAUX = LOW; AUX = 0; BARRERA = LOW;
+    CREDITO--;
+
+    COIN++; BANK++; PJFIJO++;
+    if (BANKTIEMPO < 10) BANKTIEMPO++;
+
+    putEEPROM(9, BANK);
+    putEEPROMUint(25, PJFIJO);
+    putEEPROMUint(1, COIN);
+    sincronizarPrevContadores();
+    marcarPantalla();
+    actualizarPantalla();
+    enviarTelemetriaGrua();
+
+    Z = random(5);
+
+    // PINZA CON PREMIO
+    if (PAGO <= BANK && Z <= 3) {
+        analogWrite(SPINZA, 250);
+        delayConMonedas(2000);
+        auxtbarrera = HIGH;
+        while (auxtbarrera == HIGH) {
+            while (X < 3000) {
+                client.loop();
+                leecoin();
+                if (digitalRead(EPINZA) == HIGH) X = 0;
+                if (X == 150) analogWrite(SPINZA, 0);
+                if (digitalRead(EPINZA) == LOW) { X++; delay(1); }
+
+                if (TIEMPO8 <= 20) TIEMPO8++;
+                if (TIEMPO8 >= 19) {
+                    TIEMPO8 = 0;
+                    if (BARRERAAUX == LOW) leerbarrera();
+                }
+                if (X == 2998) auxtbarrera = LOW;
+                if (BARRERAAUX == HIGH) { auxtbarrera = LOW; break; }
+                if (millis() - inicioJuego > TIMEOUT_JUEGO_MS) { auxtbarrera = LOW; break; }
+            }
+            if (X >= 3000) auxtbarrera = LOW;
+        }
+    }
+    // PINZA SIN PREMIO
+    else {
+        analogWrite(SPINZA, 255);
+        delayConMonedas(TIEMPO5);
+        FUERZAAUX2 = FUERZA;
+        if (BANK <= -10) FUERZAAUX2 = FUERZA * 0.8;
+
+        FUERZAV = random(FUERZAAUX2 * 1.8, FUERZAAUX2 * 2.5);
+        FUERZAAUX = (FUERZAV - FUERZAAUX2) / 10;
+        TIEMPOAUX = 0; TIEMPOAUX1 = (TIEMPO / 10);
+
+        while (TIEMPOAUX <= 10) {
+            FUERZAV -= FUERZAAUX;
+            analogWrite(SPINZA, FUERZAV);
+            TIEMPOAUX++;
+            delayConMonedas(TIEMPOAUX1);
+        }
+
+        analogWrite(SPINZA, FUERZA * 1.3);
+        delayConMonedas(300);
+        analogWrite(SPINZA, FUERZA);
+        delayConMonedas(100);
+        analogWrite(SPINZA, FUERZA * 1.3);
+        auxtbarrera = HIGH;
+
+        while (auxtbarrera == HIGH) {
+            while (X < 3000) {
+                client.loop();
+                leecoin();
+
+                if (digitalRead(EPINZA) == HIGH) X = 0;
+                if (X == 150) analogWrite(SPINZA, 0);
+                if (digitalRead(EPINZA) == LOW) { X++; delay(1); }
+
+                if (TIEMPO8 <= 20) TIEMPO8++;
+                if (TIEMPO8 >= 19) {
+                    TIEMPO8 = 0;
+                    if (BARRERAAUX == LOW) leerbarrera();
+                }
+                if (X == 2998) auxtbarrera = LOW;
+                if (BARRERAAUX == HIGH) { auxtbarrera = LOW; break; }
+                if (millis() - inicioJuego > TIMEOUT_JUEGO_MS) { auxtbarrera = LOW; break; }
+            }
+            if (X >= 3000) auxtbarrera = LOW;
+        }
+    }
+
+    analogWrite(SPINZA, 0);
+    TIEMPO8 = 0; X = 0; A = 0;
+    marcarPantalla();
+}
+
+void atenderPinza() {
+    unsigned long ahora = millis();
+    if (ahora - lastPinzaTick < 1) return;
+    lastPinzaTick = ahora;
+
+    if (digitalRead(EPINZA) == HIGH) {
+        if (AUX < 5) AUX++;
+    } else {
+        AUX = 0;
+        return;
+    }
+
+    if (AUX < 5) return;
+    AUX = 0;
+
+    if (CREDITO < 1) return;
+    jugarPinza();
 }
 
 void ajustebarrera() {
@@ -651,9 +819,11 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
         putEEPROMUint(1, 0);
         putEEPROMUint(5, 0);
         putEEPROM(9, 0);
+        putEEPROMUint(EEPROM_FICHAS_TOTAL, 0);
         COIN = 0;
         CONTSALIDA = 0;
         BANK = 0;
+        FICHAS_TOTAL = 0;
         BORRARCONTADORES = LOW;
         lcd.clear();
         lcd.setCursor(0,0);
@@ -757,6 +927,42 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     delay(100);
 
     putEEPROM(EEPROM_FICHAS_POR_JUEGO, FICHAS_POR_JUEGO);
+
+    // MODO MAQUINA
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("MODO MAQUINA");
+    lcd.setCursor(0,1);
+    if (MODO_MAQUINA == MODO_CONTROL) lcd.print("CONTROL");
+    else lcd.print("COIN");
+    delay(500);
+
+    while (digitalRead(DATO3) == HIGH) {
+        if (leerBotonConDebounce(DATO6)) {
+            MODO_MAQUINA = MODO_COIN;
+            lcd.clear();
+            lcd.setCursor(0,0);
+            lcd.print("MODO MAQUINA");
+            lcd.setCursor(0,1);
+            lcd.print("COIN");
+        }
+        if (leerBotonConDebounce(DATO10)) {
+            MODO_MAQUINA = MODO_CONTROL;
+            lcd.clear();
+            lcd.setCursor(0,0);
+            lcd.print("MODO MAQUINA");
+            lcd.setCursor(0,1);
+            lcd.print("CONTROL");
+        }
+        delay(10);
+    }
+
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+    }
+    delay(100);
+
+    putEEPROM(EEPROM_MODO_MAQUINA, MODO_MAQUINA);
 
     // AJUSTAR TIEMPO
     lcd.clear();
@@ -960,6 +1166,8 @@ void setup() {
         putEEPROMUint(25, 0); putEEPROMUint(29, 0); putEEPROM(33, 0);
         putEEPROM(37, 0); putEEPROM(41, 0); putEEPROM(45, 35);
         putEEPROM(EEPROM_FICHAS_POR_JUEGO, 1);
+        putEEPROM(EEPROM_MODO_MAQUINA, MODO_COIN);
+        putEEPROMUint(EEPROM_FICHAS_TOTAL, 0);
     }
 
     COIN = getEEPROMUint(1); CONTSALIDA = getEEPROMUint(5);
@@ -968,16 +1176,20 @@ void setup() {
     PJFIJO = getEEPROMUint(25); PPFIJO = getEEPROMUint(29);
     BARRERAAUX2 = getEEPROM(33); GRUADISPLAY = getEEPROM(37);
     TIEMPO5 = getEEPROM(41);
+    FICHAS_TOTAL = getEEPROMUint(EEPROM_FICHAS_TOTAL);
     FICHAS_POR_JUEGO = getEEPROM(EEPROM_FICHAS_POR_JUEGO);
     if (FICHAS_POR_JUEGO < 1) {
         FICHAS_POR_JUEGO = 1;
         putEEPROM(EEPROM_FICHAS_POR_JUEGO, FICHAS_POR_JUEGO);
     }
+    MODO_MAQUINA = getEEPROM(EEPROM_MODO_MAQUINA);
+    if (MODO_MAQUINA != MODO_CONTROL) MODO_MAQUINA = MODO_COIN;
 
     prevPJFIJO = PJFIJO;
     prevPPFIJO = PPFIJO;
     prevBANK = BANK;
     prevPAGO = PAGO;
+    prevFICHAS_TOTAL = FICHAS_TOTAL;
 
     construirTopicsMqtt();
     
@@ -1026,4 +1238,6 @@ void loop() {
 
     actualizarPantalla();
     tareasIdle();
+
+    if (MODO_MAQUINA == MODO_CONTROL) atenderPinza();
 }
