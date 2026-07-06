@@ -24,11 +24,11 @@
 
 // --- CONFIGURACIÓN WIFI Y BROKER ---
 const char* DNI_ADMIN = "00000000";
-const char* CODIGO_HARDWARE = "Grua_123";
+const char* CODIGO_HARDWARE = "ESP32_004";
 const int TIPO_MAQUINA = 2;
 
-const char* ssid = "FIBRA-WIFI6-229F";
-const char* password = "46332714";
+const char* ssid = "bonusplay2";
+const char* password = "86678216";
 
 const char* mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
@@ -1224,6 +1224,7 @@ void setup() {
     client.setBufferSize(512);
     tickerPulso.attach(60, activarHeartbeat);
     marcarPantalla();
+    enviarTelemetriaGrua();
 }
 
 // ============================================================================
