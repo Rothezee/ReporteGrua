@@ -1,4 +1,4 @@
-// Junio 2026
+// Octubre 2026
 // Protocolo: MQTT
 // Memoria: Seleccionable (Interna ESP32 o Externa I2C)
 
@@ -24,11 +24,11 @@
 
 // --- CONFIGURACIÓN WIFI Y BROKER ---
 const char* DNI_ADMIN = "00000000";
-const char* CODIGO_HARDWARE = "ESP32_004";
+const char* CODIGO_HARDWARE = "ESP32_001"; // UNICO por placa (client ID MQTT)
 const int TIPO_MAQUINA = 2;
 
-const char* ssid = "bonusplay2";
-const char* password = "86678216";
+const char* ssid = "4GWiFi_325193";
+const char* password = "12345678";
 
 const char* mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
@@ -88,10 +88,12 @@ int distancia = 0;
 int tiempo = 0;
 unsigned int CTIEMPO = 0;
 int AUX = 0;
-int AUXCOIN = 0;
-int AUX2COIN = 0;
 int monedasAcumuladas = 0;
-unsigned long lastCoinTick = 0;
+// Pulsos ISR: 1 ficha = 1 pulso HIGH→LOW→HIGH (re-arm en HIGH, sin lockout largo)
+volatile uint32_t coinPulsesPendientes = 0;
+volatile bool coinArmed = true;
+volatile unsigned long lastCoinEdgeUs = 0;
+const unsigned long COIN_DEBOUNCE_US = 10000; // 10 ms anti-rebote entre flancos
 int16_t FICHAS_POR_JUEGO = 1;
 int16_t MODO_MAQUINA = MODO_COIN;
 int CREDITO = 0;
@@ -110,6 +112,10 @@ int TIEMPOAUX1 = 0;
 int FUERZAAUX2 = 0;
 int16_t GRUADISPLAY = 0;
 int16_t BARRERAAUX2 = 0;
+bool premioCoinPendiente = false;
+bool infrarrojoDetectando = false;
+unsigned long infrarrojoDesde = 0;
+const unsigned long INFRARROJO_CONFIRMACION_MS = 50;
 char DAT;
 int TIEMPO7 = 0;
 unsigned long TIEMPO8 = 0;
@@ -132,15 +138,34 @@ int lastTelCoins = -1;
 const unsigned long TELEMETRIA_DEDUP_MS = 3000;
 
 volatile bool debeEnviarHeartbeat = false;
-unsigned long lastWifiCheck = 0;
-const long wifiCheckInterval = 30000;
+unsigned long lastWifiBeginAttempt = 0;
+// Solo forzar WiFi.begin() si sigue caido tras este tiempo (evita pelear con auto-reconnect)
+const unsigned long WIFI_RETRY_MS = 30000;
 
 bool pantallaSucia = true;
 unsigned long lastMqttReconnectAttempt = 0;
-unsigned long lastWifiBeginAttempt = 0;
-bool wifiEnProgreso = false;
+
+bool eepromNeedsCommit = false;
 
 void marcarPantalla() { pantallaSucia = true; }
+
+void flushEEPROM() {
+#if USAR_EEPROM_EXTERNA == 0
+    if (eepromNeedsCommit) {
+        EEPROM.commit();
+        eepromNeedsCommit = false;
+    }
+#endif
+}
+
+void resetEstadoTelemetria() {
+    lastTelPago = -1;
+    lastTelCoin = -1;
+    lastTelPremios = -1;
+    lastTelBanco = -1;
+    lastTelCoins = -1;
+    lastTelemetriaEnvio = 0;
+}
 
 // ============================================================================
 // FUNCIONES DE MEMORIA HÍBRIDA (INTERNA / EXTERNA)
@@ -197,7 +222,7 @@ void putEEPROM(int address, int value) {
     EEPROM.get(address, current);
     if (current != value) {
       EEPROM.put(address, (int16_t)value);
-      EEPROM.commit();
+      eepromNeedsCommit = true;
     }
   }
 }
@@ -216,7 +241,7 @@ void putEEPROMUint(int address, unsigned int value) {
     EEPROM.get(address, current);
     if (current != value) {
       EEPROM.put(address, (uint32_t)value);
-      EEPROM.commit();
+      eepromNeedsCommit = true;
     }
   }
 }
@@ -258,6 +283,18 @@ unsigned int getEEPROMUint(int address) {
 // RED Y MQTT
 // ============================================================================
 
+bool enviarTelemetriaGrua();
+bool enviarTelemetriaSiNuevaPartida();
+bool enviarHeartbeat();
+void mantenerRed();
+void delayConRed(unsigned long ms);
+void leecoin();
+void IRAM_ATTR coinIsr();
+void programar();
+void reconnectMQTT();
+void rearmarBarreraSiLibre();
+void leerbarrera();
+
 void construirTopicsMqtt() {
     snprintf(topic_datos, sizeof(topic_datos), "maquinas/%s/datos", CODIGO_HARDWARE);
     snprintf(topic_heartbeat, sizeof(topic_heartbeat), "maquinas/%s/heartbeat", CODIGO_HARDWARE);
@@ -283,38 +320,80 @@ void marcarTelemetriaEnviada(int pago, int coin, int premios, int banco, int coi
 
 void connectToWiFi() {
     if (WiFi.status() == WL_CONNECTED) return;
-    WiFi.disconnect(true);
-    delay(1000);
+
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setAutoReconnect(true);
+    WiFi.persistent(true);
+
+    // disconnect(false) no borra credenciales; true a veces deja el STA colgado
+    WiFi.disconnect(false);
+    delay(200);
+
     Serial.println("Conectando a WiFi...");
     WiFi.begin(ssid, password);
+    lastWifiBeginAttempt = millis();
+
+    // ~20 intentos x 500 ms ≈ 10 s (como antes)
     int retry = 0;
-    while (WiFi.status() != WL_CONNECTED && retry < 10) {
-        delay(500); Serial.print("."); retry++;
+    const int maxRetry = 20;
+    while (WiFi.status() != WL_CONNECTED && retry < maxRetry) {
+        delay(500);
+        Serial.print(".");
+        retry++;
     }
+
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("\nWiFi Conectado");
-        Serial.print("IP: "); Serial.println(WiFi.localIP());
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+        Serial.print("RSSI: ");
+        Serial.println(WiFi.RSSI());
+    } else {
+        Serial.println("\nWiFi no conecto en setup; auto-reconnect + retry en loop");
     }
 }
 
-void mantenerWiFi() {
+void mantenerRed() {
+    if (debeEnviarHeartbeat) {
+        enviarHeartbeat();
+        debeEnviarHeartbeat = false;
+    }
+
     if (WiFi.status() == WL_CONNECTED) {
-        wifiEnProgreso = false;
+        if (!client.connected()) reconnectMQTT();
+        client.loop();
         return;
     }
+
+    // Un solo camino de reconexion:
+    // 1) setAutoReconnect(true) trabaja solo
+    // 2) solo si sigue caido > WIFI_RETRY_MS: disconnect + un begin limpio
+    // Nunca spamear begin mientras el STA ya esta "connecting"
     unsigned long ahora = millis();
-    if (wifiEnProgreso) {
-        if (ahora - lastWifiBeginAttempt > 10000) {
-            wifiEnProgreso = false;
-        }
-        return;
-    }
-    if (ahora - lastWifiCheck < wifiCheckInterval) return;
-    lastWifiCheck = ahora;
+    if (ahora - lastWifiBeginAttempt < WIFI_RETRY_MS) return;
     lastWifiBeginAttempt = ahora;
-    wifiEnProgreso = true;
-    Serial.println("Conectando a WiFi...");
+
+    Serial.print("WiFi caido (status=");
+    Serial.print((int)WiFi.status());
+    Serial.println("): reconexion limpia");
+
+    WiFi.disconnect(false); // corta intento en curso (evita "sta is connecting")
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setAutoReconnect(true);
     WiFi.begin(ssid, password);
+}
+
+void delayConRed(unsigned long ms) {
+    unsigned long inicio = millis();
+    while (millis() - inicio < ms) {
+        leecoin(); // monedero antes que red (red puede bloquear)
+        mantenerRed();
+        delay(10);
+    }
 }
 
 
@@ -328,6 +407,7 @@ void reconnectMQTT() {
         if (client.connect(CODIGO_HARDWARE, "maquinas/status", 1, true, "offline")) {
             Serial.println("¡Conectado!");
             client.publish("maquinas/status", "online");
+            enviarTelemetriaSiNuevaPartida();
         } else {
             Serial.print("Fallo rc="); 
             Serial.println(client.state());
@@ -366,6 +446,11 @@ bool enviarTelemetriaGrua() {
         return true;
     }
     return false;
+}
+
+bool enviarTelemetriaSiNuevaPartida() {
+    if (PJFIJO <= lastTelCoin && lastTelCoin >= 0) return false;
+    return enviarTelemetriaGrua();
 }
 
 void activarHeartbeat() { debeEnviarHeartbeat = true; }
@@ -432,26 +517,29 @@ void sincronizarPrevContadores() {
     prevFICHAS_TOTAL = FICHAS_TOTAL;
 }
 
+// Solo actualiza contadores/RAM/EEPROM-put. Flush y MQTT los hace leecoin() al final del lote.
 void registrarPartidoPorMoneda() {
     if (MODO_MAQUINA == MODO_CONTROL) {
         CREDITO++;
         sincronizarPrevContadores();
         marcarPantalla();
-        enviarTelemetriaGrua();
         return;
     }
 
     COIN++;
     PJFIJO++;
     BANK++;
-    BARRERAAUX = LOW;
+    premioCoinPendiente = true;
+    infrarrojoDetectando = false;
+    infrarrojoDesde = 0;
+    // Si el infrarrojo ya esta tapado, espera que quede libre antes de armarse.
+    BARRERAAUX = (BARRERAAUX2 == 0 && digitalRead(DATO7) == HIGH) ? HIGH : LOW;
     BARRERA = LOW;
     putEEPROMUint(1, COIN);
     putEEPROMUint(25, PJFIJO);
     putEEPROM(9, BANK);
     sincronizarPrevContadores();
     marcarPantalla();
-    enviarTelemetriaGrua();
 }
 
 void tareasIdle() {
@@ -461,7 +549,6 @@ void tareasIdle() {
         PAGO != prevPAGO || FICHAS_TOTAL != prevFICHAS_TOTAL) {
         sincronizarPrevContadores();
         marcarPantalla();
-        enviarTelemetriaGrua();
     }
 
     if (digitalRead(DATO3) == LOW) AUXDATO3++;
@@ -488,27 +575,36 @@ void tareasIdle() {
             if (BARRERAAUX == LOW) leerbarrera();
         }
     }
-    if (WiFi.status() == WL_CONNECTED) {
-        if (!client.connected()) reconnectMQTT();
-        client.loop();
+}
+
+// ISR: cuenta en LOW solo si venia HIGH (coinArmed). Re-arma en HIGH.
+// Permite 2 fichas rapidas si el pulso vuelve a HIGH entre medias; filtra rebote.
+void IRAM_ATTR coinIsr() {
+    unsigned long ahora = micros();
+    if ((ahora - lastCoinEdgeUs) < COIN_DEBOUNCE_US) return;
+    lastCoinEdgeUs = ahora;
+
+    if (digitalRead(ECOIN) == LOW) {
+        if (!coinArmed) return;
+        coinArmed = false;
+        coinPulsesPendientes++;
+    } else {
+        coinArmed = true;
     }
 }
 
+// Drena pulsos de la ISR y aplica contadores. Un solo flush EEPROM + telemetria al final.
 void leecoin() {
-    unsigned long ahora = millis();
-    if (ahora - lastCoinTick < 1) return;
-    lastCoinTick = ahora;
+    noInterrupts();
+    uint32_t n = coinPulsesPendientes;
+    coinPulsesPendientes = 0;
+    interrupts();
+    if (n == 0) return;
 
     int fichasPorJuego = FICHAS_POR_JUEGO < 1 ? 1 : FICHAS_POR_JUEGO;
+    unsigned int pjAntes = PJFIJO;
 
-    if (digitalRead(ECOIN) == LOW) {
-        if (AUXCOIN < 5) AUXCOIN++;
-    } else if (AUXCOIN > 0) {
-        AUXCOIN--;
-    }
-
-    if (AUXCOIN >= 5 && AUX2COIN == LOW) {
-        AUX2COIN = HIGH;
+    for (uint32_t i = 0; i < n; i++) {
         FICHAS_TOTAL++;
         putEEPROMUint(EEPROM_FICHAS_TOTAL, FICHAS_TOTAL);
         monedasAcumuladas++;
@@ -517,14 +613,30 @@ void leecoin() {
             registrarPartidoPorMoneda();
         }
     }
-    if (AUXCOIN == 0 && AUX2COIN == HIGH) AUX2COIN = LOW;
+
+    flushEEPROM();
+    if (PJFIJO > pjAntes) {
+        enviarTelemetriaSiNuevaPartida();
+    }
 }
 
 void rearmarBarreraSiLibre() {
+    // COIN + infrarrojo: al encender queda desarmada hasta el primer juego.
+    // Despues de un premio, si la rampa vuelve a quedar libre, se rearma
+    // (permite destapar un peluche trabado y tirarlo por la barrera).
+    if (MODO_MAQUINA == MODO_COIN && BARRERAAUX2 == 0 && !premioCoinPendiente) {
+        BARRERAAUX = HIGH;
+        return;
+    }
+
     if (BARRERAAUX != HIGH) return;
 
     if (BARRERAAUX2 == 0) {
-        if (digitalRead(DATO7) == LOW) BARRERAAUX = LOW;
+        if (digitalRead(DATO7) == LOW) {
+            infrarrojoDetectando = false;
+            infrarrojoDesde = 0;
+            BARRERAAUX = LOW;
+        }
         return;
     }
 
@@ -556,21 +668,38 @@ void leerbarrera() {
             }
             sincronizarPrevContadores();
             marcarPantalla();
-            enviarTelemetriaGrua();
+            flushEEPROM();
         }
     }
     if (BARRERAAUX2 == 0) {
-        if (digitalRead(DATO7) == HIGH) BARRERA = HIGH;
+        // Confirma el bloqueo durante 50 ms para rechazar ruido al encender
+        // e interferencias breves del sensor.
+        if (digitalRead(DATO7) == LOW) {
+            infrarrojoDetectando = false;
+            infrarrojoDesde = 0;
+            BARRERA = LOW;
+            return;
+        }
+        if (!infrarrojoDetectando) {
+            infrarrojoDetectando = true;
+            infrarrojoDesde = millis();
+            return;
+        }
+        if (millis() - infrarrojoDesde < INFRARROJO_CONFIRMACION_MS) return;
+        BARRERA = HIGH;
         if (BARRERA == HIGH) {
             lcd.setCursor(0, 1); lcd.print("###");
             CONTSALIDA++; PPFIJO++; BANK -= PAGO;
-            BARRERA = LOW; BARRERAAUX = HIGH;
+            BARRERA = LOW;
+            BARRERAAUX = HIGH; // desarmar; se rearmara cuando DATO7 quede libre
+            infrarrojoDetectando = false;
+            infrarrojoDesde = 0;
             putEEPROMUint(5, CONTSALIDA);
             putEEPROMUint(29, PPFIJO);
             putEEPROM(9, BANK);
             sincronizarPrevContadores();
             marcarPantalla();
-            enviarTelemetriaGrua();
+            flushEEPROM();
         }
     }
 }
@@ -583,6 +712,7 @@ void delayConMonedas(unsigned long ms) {
     unsigned long inicio = millis();
     while (millis() - inicio < ms) {
         leecoin();
+        mantenerRed();
         delay(1);
     }
 }
@@ -604,7 +734,8 @@ void jugarPinza() {
     sincronizarPrevContadores();
     marcarPantalla();
     actualizarPantalla();
-    enviarTelemetriaGrua();
+    flushEEPROM();
+    enviarTelemetriaSiNuevaPartida();
 
     Z = random(5);
 
@@ -615,8 +746,8 @@ void jugarPinza() {
         auxtbarrera = HIGH;
         while (auxtbarrera == HIGH) {
             while (X < 3000) {
-                client.loop();
                 leecoin();
+                mantenerRed();
                 if (digitalRead(EPINZA) == HIGH) X = 0;
                 if (X == 150) analogWrite(SPINZA, 0);
                 if (digitalRead(EPINZA) == LOW) { X++; delay(1); }
@@ -660,8 +791,8 @@ void jugarPinza() {
 
         while (auxtbarrera == HIGH) {
             while (X < 3000) {
-                client.loop();
                 leecoin();
+                mantenerRed();
 
                 if (digitalRead(EPINZA) == HIGH) X = 0;
                 if (X == 150) analogWrite(SPINZA, 0);
@@ -717,48 +848,104 @@ void ajustebarrera() {
         tiempo = pulseIn(echo, HIGH);
         distancia = tiempo / 10;
         if ((distancia + 130) < RDISTANCIA || (distancia - 130) > RDISTANCIA) BARRERA = HIGH;
-        if (BARRERA == HIGH) { lcd.setCursor(0, 1); lcd.print("###"); delay(1000); }
+        if (BARRERA == HIGH) { lcd.setCursor(0, 1); lcd.print("###"); delayConRed(1000); }
     }
     if (BARRERAAUX2 == 0) {
         if (digitalRead(DATO7) == HIGH) BARRERA = HIGH;
-        if (BARRERA == HIGH) { AUXSIM = HIGH; lcd.setCursor(0, 1); lcd.print("###"); delay(1000); }
+        if (BARRERA == HIGH) { AUXSIM = HIGH; lcd.setCursor(0, 1); lcd.print("###"); delayConRed(1000); }
     }
 }
 
 bool leerBotonConDebounce(int pin, int delayMs = 50) {
     if (digitalRead(pin) == LOW) {
-        delay(delayMs);
+        delayConRed(delayMs);
         if (digitalRead(pin) == LOW) {
-            while (digitalRead(pin) == LOW) delay(10);
-            delay(50); return true;
+            while (digitalRead(pin) == LOW) {
+                delay(10);
+                mantenerRed();
+            }
+            delayConRed(50);
+            return true;
         }
     }
     return false;
 }
 
-   void programar() {
+// Mantener apretado: 1er toque = 1 paso; luego acelera (y multiplica pasos).
+// Retorna cantidad de pasos a aplicar (0 = nada).
+int leerBotonHold(int pin) {
+    static int pinActivo = -1;
+    static unsigned long tInicio = 0;
+    static unsigned long tUltimo = 0;
+
+    if (digitalRead(pin) != LOW) {
+        if (pinActivo == pin) pinActivo = -1;
+        return 0;
+    }
+
+    unsigned long ahora = millis();
+
+    if (pinActivo != pin) {
+        delay(25);
+        if (digitalRead(pin) != LOW) return 0;
+        pinActivo = pin;
+        tInicio = ahora;
+        tUltimo = ahora;
+        return 1;
+    }
+
+    unsigned long held = ahora - tInicio;
+    if (held < 350) return 0; // espera antes de repetir
+
+    unsigned long intervalo;
+    int pasos;
+    if (held < 1200) {
+        intervalo = 140;
+        pasos = 1;
+    } else if (held < 2500) {
+        intervalo = 60;
+        pasos = 1;
+    } else if (held < 4500) {
+        intervalo = 35;
+        pasos = 2;
+    } else {
+        intervalo = 25;
+        pasos = 5;
+    }
+
+    if (ahora - tUltimo >= intervalo) {
+        tUltimo = ahora;
+        return pasos;
+    }
+    return 0;
+}
+
+void programar() {
     lcd.clear();
     lcd.setCursor(0,0);
     lcd.print("VERSION 1.7");
     lcd.setCursor(0,1);
     lcd.print("24/5/24");
-    delay(500);
+    delayConRed(500);
     
     // Esperar a que se suelte DATO3 si está presionado
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);  // Delay adicional
+    delayConRed(100);  // Delay adicional
     
     // Esperar a que se presione DATO3
     while (digitalRead(DATO3) == HIGH) {
         delay(20);
+        mantenerRed();
     }
     // Esperar a que se suelte
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
 
     // Pantalla PJ/PP
     lcd.clear();
@@ -770,27 +957,31 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.print("PP:");
     lcd.setCursor(4,1);
     lcd.print(PPFIJO);
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         delay(20);
+        mantenerRed();
     }
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     GRUADISPLAY = 0;
     graficar();
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         delay(20);
+        mantenerRed();
     }
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     GRUADISPLAY = getEEPROM(37);
 
@@ -800,7 +991,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.print("BORRA CONTADORES");
     lcd.setCursor(0,1);
     lcd.print("NO");
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         if (leerBotonConDebounce(DATO6)) {
@@ -814,13 +1005,15 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
             lcd.print("NO");
         }
         delay(10);
+        mantenerRed();
     }
     
     // Esperar a que se suelte DATO3
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     if (BORRARCONTADORES == HIGH) {
         putEEPROMUint(1, 0);
@@ -835,7 +1028,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
         lcd.clear();
         lcd.setCursor(0,0);
         lcd.print("BORRADOS");
-        delay(1000);
+        delayConRed(1000);
     }
 
     // Display Modo
@@ -850,7 +1043,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
         lcd.setCursor(0,1);
         lcd.print("Modo Coin");
     }
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         if (leerBotonConDebounce(DATO6)) {
@@ -870,12 +1063,14 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
             lcd.print("Modo Coin");
         }
         delay(10);
+        mantenerRed();
     }
     
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     putEEPROM(37, GRUADISPLAY);
 
@@ -883,27 +1078,27 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.clear();
     lcd.setCursor(0,0);
     lcd.print("AJUSTAR PAGO");
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         lcd.setCursor(0,1);
         lcd.print("   ");  // Limpiar
         lcd.setCursor(0,1);
         lcd.print(PAGO);
-        
-        if (leerBotonConDebounce(DATO6)) {
-            PAGO++;
-        }
-        if (leerBotonConDebounce(DATO10)) {
-            PAGO--;
-        }
+
+        int up = leerBotonHold(DATO6);
+        int down = leerBotonHold(DATO10);
+        if (up > 0) PAGO += up;
+        if (down > 0) PAGO -= down;
         delay(10);
+        mantenerRed();
     }
     
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     putEEPROM(13, PAGO);
 
@@ -911,7 +1106,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("FICHAS/JUEGO");
-    delay(500);
+    delayConRed(500);
 
     while (digitalRead(DATO3) == HIGH) {
         lcd.setCursor(0, 1);
@@ -919,19 +1114,25 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
         lcd.setCursor(0, 1);
         lcd.print(FICHAS_POR_JUEGO);
 
-        if (leerBotonConDebounce(DATO6) && FICHAS_POR_JUEGO < 10) {
-            FICHAS_POR_JUEGO++;
+        int up = leerBotonHold(DATO6);
+        int down = leerBotonHold(DATO10);
+        if (up > 0 && FICHAS_POR_JUEGO < 10) {
+            FICHAS_POR_JUEGO += up;
+            if (FICHAS_POR_JUEGO > 10) FICHAS_POR_JUEGO = 10;
         }
-        if (leerBotonConDebounce(DATO10) && FICHAS_POR_JUEGO > 1) {
-            FICHAS_POR_JUEGO--;
+        if (down > 0 && FICHAS_POR_JUEGO > 1) {
+            FICHAS_POR_JUEGO -= down;
+            if (FICHAS_POR_JUEGO < 1) FICHAS_POR_JUEGO = 1;
         }
         delay(10);
+        mantenerRed();
     }
 
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
 
     putEEPROM(EEPROM_FICHAS_POR_JUEGO, FICHAS_POR_JUEGO);
 
@@ -942,7 +1143,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.setCursor(0,1);
     if (MODO_MAQUINA == MODO_CONTROL) lcd.print("CONTROL");
     else lcd.print("COIN");
-    delay(500);
+    delayConRed(500);
 
     while (digitalRead(DATO3) == HIGH) {
         if (leerBotonConDebounce(DATO6)) {
@@ -962,12 +1163,14 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
             lcd.print("CONTROL");
         }
         delay(10);
+        mantenerRed();
     }
 
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
 
     putEEPROM(EEPROM_MODO_MAQUINA, MODO_MAQUINA);
 
@@ -975,27 +1178,33 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.clear();
     lcd.setCursor(0,0);
     lcd.print("AJUSTAR TIEMPO");
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         lcd.setCursor(0,1);
         lcd.print("     ");  // Limpiar
         lcd.setCursor(0,1);
         lcd.print(TIEMPO);
-        
-        if (leerBotonConDebounce(DATO6) && TIEMPO < 5000) {
-            TIEMPO += 10;
+
+        int up = leerBotonHold(DATO6);
+        int down = leerBotonHold(DATO10);
+        if (up > 0 && TIEMPO < 5000) {
+            TIEMPO += 10 * up;
+            if (TIEMPO > 5000) TIEMPO = 5000;
         }
-        if (leerBotonConDebounce(DATO10) && TIEMPO > 500) {
-            TIEMPO -= 10;
+        if (down > 0 && TIEMPO > 500) {
+            TIEMPO -= 10 * down;
+            if (TIEMPO < 500) TIEMPO = 500;
         }
         delay(10);
+        mantenerRed();
     }
     
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     putEEPROM(17, TIEMPO);
 
@@ -1003,27 +1212,33 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.clear();
     lcd.setCursor(0,0);
     lcd.print("TIEMPO F. FUERTE");
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         lcd.setCursor(0,1);
         lcd.print("     ");  // Limpiar
         lcd.setCursor(0,1);
         lcd.print(TIEMPO5);
-        
-        if (leerBotonConDebounce(DATO6) && TIEMPO5 < 5000) {
-            TIEMPO5 += 10;
+
+        int up = leerBotonHold(DATO6);
+        int down = leerBotonHold(DATO10);
+        if (up > 0 && TIEMPO5 < 5000) {
+            TIEMPO5 += 10 * up;
+            if (TIEMPO5 > 5000) TIEMPO5 = 5000;
         }
-        if (leerBotonConDebounce(DATO10) && TIEMPO5 > 0) {
-            TIEMPO5 -= 10;
+        if (down > 0 && TIEMPO5 > 0) {
+            TIEMPO5 -= 10 * down;
+            if (TIEMPO5 < 0) TIEMPO5 = 0;
         }
         delay(10);
+        mantenerRed();
     }
     
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     putEEPROM(41, TIEMPO5);
 
@@ -1031,27 +1246,33 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.clear();
     lcd.setCursor(0,0);
     lcd.print("AJUSTAR FUERZA");
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         lcd.setCursor(0,1);
         lcd.print("   ");  // Limpiar
         lcd.setCursor(0,1);
         lcd.print(FUERZA);
-        
-        if (leerBotonConDebounce(DATO6) && FUERZA < 101) {
-            FUERZA++;
+
+        int up = leerBotonHold(DATO6);
+        int down = leerBotonHold(DATO10);
+        if (up > 0 && FUERZA < 101) {
+            FUERZA += up;
+            if (FUERZA > 101) FUERZA = 101;
         }
-        if (leerBotonConDebounce(DATO10) && FUERZA > 5) {
-            FUERZA--;
+        if (down > 0 && FUERZA > 5) {
+            FUERZA -= down;
+            if (FUERZA < 5) FUERZA = 5;
         }
         delay(10);
+        mantenerRed();
     }
     
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     putEEPROM(21, FUERZA);
 
@@ -1067,7 +1288,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
         lcd.setCursor(0,1);
         lcd.print("ULTRASONIDO");
     }
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         if (leerBotonConDebounce(DATO6)) {
@@ -1087,12 +1308,14 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
             lcd.print("ULTRASONIDO");
         }
         delay(10);
+        mantenerRed();
     }
     
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
     
     putEEPROM(33, BARRERAAUX2);
 
@@ -1100,7 +1323,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     lcd.clear();
     lcd.setCursor(0,0);
     lcd.print("PRUEBA BARRERA");
-    delay(500);
+    delayConRed(500);
     
     while (digitalRead(DATO3) == HIGH) {
         lcd.setCursor(0,1);
@@ -1114,7 +1337,7 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
         if (BARRERA == HIGH) {
             lcd.setCursor(0,1);
             lcd.print("###");
-            delay(1000);
+            delayConRed(1000);
             BARRERA = LOW;
         }
         delay(50);
@@ -1122,11 +1345,12 @@ bool leerBotonConDebounce(int pin, int delayMs = 50) {
     
     while (digitalRead(DATO3) == LOW) {
         delay(20);
+        mantenerRed();
     }
-    delay(100);
+    delayConRed(100);
 
     graficar();
-    delay(500);
+    delayConRed(500);
     marcarPantalla();
 }
 
@@ -1148,9 +1372,14 @@ void setup() {
     }
 
     WiFi.setSleep(false); // Evita que el ESP32 apague la antena para ahorrar batería
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     WiFi.setAutoReconnect(true); // El chip ESP32 intentará reconectarse solo al router en segundo plano
 
-    analogWriteFrequency(EPINZA, 100);
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+    analogWriteFrequency(SPINZA, PWM_FREQUENCY);
+#else
+    analogWriteFrequency(PWM_FREQUENCY); // ESP32 core 2.x: frecuencia global de analogWrite
+#endif
     lcd.init(); lcd.backlight();
 
     pinMode(triger, OUTPUT); pinMode(echo, INPUT);
@@ -1163,6 +1392,9 @@ void setup() {
     if (ECOIN == 25 || ECOIN == 26) dacDisable(ECOIN);
 #endif
     pinMode(ECOIN, INPUT_PULLUP);
+    coinPulsesPendientes = 0;
+    coinArmed = (digitalRead(ECOIN) == HIGH);
+    attachInterrupt(digitalPinToInterrupt(ECOIN), coinIsr, CHANGE);
 
     // Leer EEPROM (Automático según modo)
     INICIO = getEEPROM(45);
@@ -1191,6 +1423,12 @@ void setup() {
     }
     MODO_MAQUINA = getEEPROM(EEPROM_MODO_MAQUINA);
     if (MODO_MAQUINA != MODO_CONTROL) MODO_MAQUINA = MODO_COIN;
+    // COIN + infrarrojo: no contar nada hasta que se registre el primer juego.
+    if (MODO_MAQUINA == MODO_COIN && BARRERAAUX2 == 0) {
+        premioCoinPendiente = false;
+        BARRERAAUX = HIGH;
+        BARRERA = LOW;
+    }
 
     prevPJFIJO = PJFIJO;
     prevPPFIJO = PPFIJO;
@@ -1203,10 +1441,10 @@ void setup() {
     if (digitalRead(DATO3) == LOW){ 
         lcd.clear(); lcd.setCursor(0,0); lcd.print("CONT.FIJOS"); 
         lcd.setCursor(0,1); lcd.print("PJ:"); lcd.print(PJFIJO); 
-        lcd.print(" PP:"); lcd.print(PPFIJO); delay(1000);
+        lcd.print(" PP:"); lcd.print(PPFIJO); delayConRed(1000);
         while (digitalRead(DATO3) == HIGH) delay(20);
     }
-    delay(1000);
+    delayConRed(1000);
     
     Y = 2;
     while(B <= 10){ 
@@ -1222,9 +1460,10 @@ void setup() {
     connectToWiFi();
     client.setServer(mqtt_server, mqtt_port);
     client.setBufferSize(512);
+    client.setKeepAlive(60);
+    client.setSocketTimeout(15);
     tickerPulso.attach(60, activarHeartbeat);
     marcarPantalla();
-    enviarTelemetriaGrua();
 }
 
 // ============================================================================
@@ -1232,18 +1471,8 @@ void setup() {
 // ============================================================================
 
 void loop() {
-    if (WiFi.status() == WL_CONNECTED) {
-        if (!client.connected()) reconnectMQTT();
-        client.loop();
-    } else {
-        mantenerWiFi();
-    }
-    
-    if (debeEnviarHeartbeat) {
-        enviarHeartbeat();
-        debeEnviarHeartbeat = false;
-    }
-
+    leecoin(); // primero: pulsos ISR no dependen de red/MQTT
+    mantenerRed();
     actualizarPantalla();
     tareasIdle();
 
