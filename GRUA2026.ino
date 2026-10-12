@@ -24,13 +24,12 @@
 
 // --- CONFIGURACIÓN WIFI Y BROKER ---
 const char* DNI_ADMIN = "00000000";
-const char* CODIGO_HARDWARE = "ESP32_001"; // UNICO por placa (client ID MQTT)
 const int TIPO_MAQUINA = 2;
 
-const char* ssid = "4GWiFi_325193";
-const char* password = "12345678";
+const char* ssid = "bonusplay2";
+const char* password = "86678216";
 
-const char* mqtt_server = "broker.emqx.io";
+const char* mqtt_server = "mqtt.eclipseprojects.io";
 const int mqtt_port = 1883;
 
 char topic_datos[48];
@@ -54,6 +53,9 @@ char topic_heartbeat[52];
 #define EEPROM_FICHAS_POR_JUEGO 49
 #define EEPROM_MODO_MAQUINA 53
 #define EEPROM_FICHAS_TOTAL 57
+#define EEPROM_ID_DISPOSITIVO 61
+#define ID_DISPOSITIVO_MIN 1
+#define ID_DISPOSITIVO_MAX 9999
 #define PWM_FREQUENCY 100
 
 // Modos de conteo
@@ -96,6 +98,8 @@ volatile unsigned long lastCoinEdgeUs = 0;
 const unsigned long COIN_DEBOUNCE_US = 10000; // 10 ms anti-rebote entre flancos
 int16_t FICHAS_POR_JUEGO = 1;
 int16_t MODO_MAQUINA = MODO_COIN;
+int16_t ID_DISPOSITIVO = 1;
+char CODIGO_HARDWARE[6] = "1"; // ID numerico (client ID MQTT y topics)
 int CREDITO = 0;
 unsigned long lastPinzaTick = 0;
 bool epinzaArmado = false;
@@ -298,6 +302,14 @@ void leerbarrera();
 void construirTopicsMqtt() {
     snprintf(topic_datos, sizeof(topic_datos), "maquinas/%s/datos", CODIGO_HARDWARE);
     snprintf(topic_heartbeat, sizeof(topic_heartbeat), "maquinas/%s/heartbeat", CODIGO_HARDWARE);
+}
+
+void aplicarIdDispositivo() {
+    if (ID_DISPOSITIVO < ID_DISPOSITIVO_MIN || ID_DISPOSITIVO > ID_DISPOSITIVO_MAX) {
+        ID_DISPOSITIVO = ID_DISPOSITIVO_MIN;
+    }
+    snprintf(CODIGO_HARDWARE, sizeof(CODIGO_HARDWARE), "%d", (int)ID_DISPOSITIVO);
+    construirTopicsMqtt();
 }
 
 bool telemetriaEsDuplicada(int pago, int coin, int premios, int banco, int coins) {
@@ -923,9 +935,9 @@ int leerBotonHold(int pin) {
 void programar() {
     lcd.clear();
     lcd.setCursor(0,0);
-    lcd.print("VERSION 1.7");
+    lcd.print("VERSION 1.8");
     lcd.setCursor(0,1);
-    lcd.print("24/5/24");
+    lcd.print("11/10/26");
     delayConRed(500);
     
     // Esperar a que se suelte DATO3 si está presionado
@@ -1174,6 +1186,43 @@ void programar() {
 
     putEEPROM(EEPROM_MODO_MAQUINA, MODO_MAQUINA);
 
+    // ID DISPOSITIVO
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("ID DISPOSITIVO");
+    delayConRed(500);
+
+    while (digitalRead(DATO3) == HIGH) {
+        lcd.setCursor(0, 1);
+        lcd.print("     ");
+        lcd.setCursor(0, 1);
+        lcd.print(ID_DISPOSITIVO);
+
+        int up = leerBotonHold(DATO6);
+        int down = leerBotonHold(DATO10);
+        if (up > 0 && ID_DISPOSITIVO < ID_DISPOSITIVO_MAX) {
+            ID_DISPOSITIVO += up;
+            if (ID_DISPOSITIVO > ID_DISPOSITIVO_MAX) ID_DISPOSITIVO = ID_DISPOSITIVO_MAX;
+        }
+        if (down > 0 && ID_DISPOSITIVO > ID_DISPOSITIVO_MIN) {
+            ID_DISPOSITIVO -= down;
+            if (ID_DISPOSITIVO < ID_DISPOSITIVO_MIN) ID_DISPOSITIVO = ID_DISPOSITIVO_MIN;
+        }
+        delay(10);
+        mantenerRed();
+    }
+
+    while (digitalRead(DATO3) == LOW) {
+        delay(20);
+        mantenerRed();
+    }
+    delayConRed(100);
+
+    putEEPROM(EEPROM_ID_DISPOSITIVO, ID_DISPOSITIVO);
+    flushEEPROM();
+    aplicarIdDispositivo();
+    if (client.connected()) client.disconnect();
+
     // AJUSTAR TIEMPO
     lcd.clear();
     lcd.setCursor(0,0);
@@ -1407,6 +1456,7 @@ void setup() {
         putEEPROM(EEPROM_FICHAS_POR_JUEGO, 1);
         putEEPROM(EEPROM_MODO_MAQUINA, MODO_COIN);
         putEEPROMUint(EEPROM_FICHAS_TOTAL, 0);
+        putEEPROM(EEPROM_ID_DISPOSITIVO, 1);
     }
 
     COIN = getEEPROMUint(1); CONTSALIDA = getEEPROMUint(5);
@@ -1423,6 +1473,12 @@ void setup() {
     }
     MODO_MAQUINA = getEEPROM(EEPROM_MODO_MAQUINA);
     if (MODO_MAQUINA != MODO_CONTROL) MODO_MAQUINA = MODO_COIN;
+    ID_DISPOSITIVO = getEEPROM(EEPROM_ID_DISPOSITIVO);
+    if (ID_DISPOSITIVO < ID_DISPOSITIVO_MIN || ID_DISPOSITIVO > ID_DISPOSITIVO_MAX) {
+        ID_DISPOSITIVO = ID_DISPOSITIVO_MIN;
+        putEEPROM(EEPROM_ID_DISPOSITIVO, ID_DISPOSITIVO);
+    }
+    aplicarIdDispositivo();
     // COIN + infrarrojo: no contar nada hasta que se registre el primer juego.
     if (MODO_MAQUINA == MODO_COIN && BARRERAAUX2 == 0) {
         premioCoinPendiente = false;
@@ -1436,8 +1492,6 @@ void setup() {
     prevPAGO = PAGO;
     prevFICHAS_TOTAL = FICHAS_TOTAL;
 
-    construirTopicsMqtt();
-    
     if (digitalRead(DATO3) == LOW){ 
         lcd.clear(); lcd.setCursor(0,0); lcd.print("CONT.FIJOS"); 
         lcd.setCursor(0,1); lcd.print("PJ:"); lcd.print(PJFIJO); 
